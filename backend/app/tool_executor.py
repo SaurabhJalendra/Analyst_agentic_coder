@@ -13,14 +13,16 @@ logger = structlog.get_logger()
 class ToolExecutor:
     """Executes tool calls from Claude API."""
 
-    def __init__(self, workspace_path: Path):
+    def __init__(self, workspace_path: Path, active_repo_path: Path = None):
         """Initialize tool executor.
 
         Args:
             workspace_path: Path to session workspace
+            active_repo_path: Path to active git repository (if any)
         """
         self.workspace_path = workspace_path
-        self.file_ops = FileOperations()
+        self.active_repo_path = active_repo_path or workspace_path
+        self.file_ops = FileOperations(workspace_path)
         self.search_ops = SearchOperations()
         self.bash_ops = BashOperations()
         self.git_ops = GitOperations()
@@ -89,28 +91,28 @@ class ToolExecutor:
                 )
             elif tool_name == "git_status":
                 result = await self.git_ops.git_status(
-                    repo_path=Path(tool_input.get("repo_path", self.workspace_path))
+                    repo_path=Path(tool_input.get("repo_path", self.active_repo_path))
                 )
             elif tool_name == "git_diff":
                 result = await self.git_ops.git_diff(
-                    repo_path=Path(tool_input.get("repo_path", self.workspace_path)),
+                    repo_path=Path(tool_input.get("repo_path", self.active_repo_path)),
                     file_path=tool_input.get("file_path")
                 )
             elif tool_name == "git_commit":
                 result = await self.git_ops.git_commit(
-                    repo_path=Path(tool_input.get("repo_path", self.workspace_path)),
+                    repo_path=Path(tool_input.get("repo_path", self.active_repo_path)),
                     message=tool_input.get("message"),
                     files=tool_input.get("files")
                 )
             elif tool_name == "git_push":
                 result = await self.git_ops.git_push(
-                    repo_path=Path(tool_input.get("repo_path", self.workspace_path)),
+                    repo_path=Path(tool_input.get("repo_path", self.active_repo_path)),
                     remote=tool_input.get("remote", "origin"),
                     branch=tool_input.get("branch")
                 )
             elif tool_name == "git_pull":
                 result = await self.git_ops.git_pull(
-                    repo_path=Path(tool_input.get("repo_path", self.workspace_path)),
+                    repo_path=Path(tool_input.get("repo_path", self.active_repo_path)),
                     remote=tool_input.get("remote", "origin"),
                     branch=tool_input.get("branch")
                 )

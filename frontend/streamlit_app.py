@@ -6,7 +6,7 @@ import json
 from components.repo_browser import render_repo_browser
 
 # Configuration
-API_BASE_URL = "http://localhost:8080"
+API_BASE_URL = "http://localhost:8000"
 
 # Page config
 st.set_page_config(

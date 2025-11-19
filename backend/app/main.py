@@ -88,6 +88,44 @@ async def startup():
     await init_db()
     logger.info("application_started")
 
+def _build_system_prompt(session: DBSession) -> str:
+    """Build system prompt with current workspace and repository context.
+
+    Args:
+        session: Current database session
+
+    Returns:
+        System prompt string with current context
+    """
+    import platform
+    os_type = platform.system()
+
+    system_prompt = (
+        f"You are a helpful coding assistant with access to file and git operations. "
+        f"Current workspace: {session.workspace_path}\n"
+        f"Active repository: {session.active_repo or 'None'}\n"
+        f"Operating System: {os_type}\n\n"
+        "IMPORTANT: "
+    )
+
+    if os_type == "Windows":
+        system_prompt += (
+            "The system is running on Windows. Use Windows-compatible commands:\n"
+            "- Use 'dir' instead of 'ls'\n"
+            "- Use 'type' instead of 'cat'\n"
+            "- Use PowerShell commands when needed (e.g., Get-ChildItem, Get-Content)\n"
+            "- Python commands work normally (python, pip, etc.)\n"
+            "- Git commands work normally\n\n"
+        )
+
+    system_prompt += (
+        "Use the available tools to help the user. When you need to perform operations, "
+        "use the appropriate tools. You can use multiple tools in sequence to complete tasks."
+    )
+
+    return system_prompt
+
+
 async def _build_message_history(history, db: AsyncSession):
     """Build message history with proper tool_use blocks."""
     import json
@@ -172,7 +210,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             session = DBSession(
                 id=session_id,
                 workspace_path=str(workspace_path),
-                active_repo=request.workspace_path
+                active_repo=None  # Will be set when a repo is cloned
             )
             db.add(session)
             await db.commit()
@@ -197,39 +235,16 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         # Build messages for Claude
         messages = await _build_message_history(history, db)
 
-        # Add system context about workspace
-        import platform
-        os_type = platform.system()
-
-        system_prompt = (
-            f"You are a helpful coding assistant with access to file and git operations. "
-            f"Current workspace: {session.workspace_path}\n"
-            f"Active repository: {session.active_repo or 'None'}\n"
-            f"Operating System: {os_type}\n\n"
-            "IMPORTANT: "
-        )
-
-        if os_type == "Windows":
-            system_prompt += (
-                "The system is running on Windows. Use Windows-compatible commands:\n"
-                "- Use 'dir' instead of 'ls'\n"
-                "- Use 'type' instead of 'cat'\n"
-                "- Use PowerShell commands when needed (e.g., Get-ChildItem, Get-Content)\n"
-                "- Python commands work normally (python, pip, etc.)\n"
-                "- Git commands work normally\n\n"
-            )
-
-        system_prompt += (
-            "Use the available tools to help the user. When you need to perform operations, "
-            "use the appropriate tools. You can use multiple tools in sequence to complete tasks."
-        )
+        # Build initial system prompt
+        system_prompt = _build_system_prompt(session)
 
         # Start progress tracking
         ProgressTracker.start_operation(session_id, request.message)
         ProgressTracker.add_step(session_id, "📝 Message received", f"User: {request.message[:100]}...")
 
         # Initialize tool executor
-        executor = ToolExecutor(Path(session.workspace_path))
+        active_repo = Path(session.active_repo) if session.active_repo else None
+        executor = ToolExecutor(Path(session.workspace_path), active_repo)
 
         # Auto-execution loop: keep calling Claude and executing tools until done
         max_iterations = 25  # Allow complex multi-step operations to complete
@@ -240,6 +255,13 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         while iteration < max_iterations:
             iteration += 1
             logger.info("claude_iteration", iteration=iteration, messages=len(messages))
+
+            # Refresh session from database to get updated active_repo
+            result = await db.execute(select(DBSession).where(DBSession.id == session_id))
+            session = result.scalar_one()
+
+            # Rebuild system prompt with current context
+            system_prompt = _build_system_prompt(session)
 
             # Update progress
             ProgressTracker.update_iteration(session_id, iteration, max_iterations, f"Iteration {iteration}/{max_iterations}")
@@ -304,6 +326,15 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
 
             results = await executor.execute_tools(tool_calls)
             all_tool_calls_executed.extend(tool_calls)
+
+            # Update active_repo if git_clone was executed successfully
+            for i, tool_call in enumerate(tool_calls):
+                if tool_call["name"] == "git_clone" and i < len(results):
+                    result = results[i]["result"]
+                    if isinstance(result, dict) and "path" in result and "error" not in result:
+                        session.active_repo = str(result["path"])
+                        await db.commit()
+                        logger.info("updated_active_repo", path=session.active_repo)
 
             # Add assistant message with tool_use blocks to messages
             content = []
@@ -377,7 +408,8 @@ async def execute_tools(request: ExecuteToolsRequest, db: AsyncSession = Depends
             raise HTTPException(status_code=404, detail="Session not found")
 
         # Initialize tool executor
-        executor = ToolExecutor(Path(session.workspace_path))
+        active_repo = Path(session.active_repo) if session.active_repo else None
+        executor = ToolExecutor(Path(session.workspace_path), active_repo)
 
         # Execute tools
         results = await executor.execute_tools(request.tool_calls)
@@ -536,7 +568,8 @@ async def clone_repository(request: CloneRequest, db: AsyncSession = Depends(get
             raise HTTPException(status_code=404, detail="Session not found")
 
         # Initialize tool executor
-        executor = ToolExecutor(Path(session.workspace_path))
+        active_repo = Path(session.active_repo) if session.active_repo else None
+        executor = ToolExecutor(Path(session.workspace_path), active_repo)
 
         # Clone repo
         credentials = None
