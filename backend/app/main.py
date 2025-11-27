@@ -245,6 +245,11 @@ async def root():
     """Root endpoint."""
     return {"message": "Claude Code Chatbot API", "status": "running"}
 
+@app.get("/health")
+async def health():
+    """Health check endpoint for Docker and monitoring."""
+    return {"status": "healthy", "service": "claude-code-chatbot-api"}
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     """Handle chat message using Claude Code CLI with automatic tool execution."""
@@ -542,15 +547,28 @@ async def clone_repository_endpoint(request: CloneRequest, db: AsyncSession = De
 
 @app.get("/api/files/{path:path}")
 async def read_file(path: str):
-    """Read a file."""
+    """Read a file from the filesystem.
+
+    Note: For workspace files, prefer using /api/workspace/{session_id}/files/{path}
+    which includes security checks.
+    """
     try:
-        file_ops = FileOperations()
-        result = await file_ops.read_file(path)
+        file_path = Path(path)
 
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
 
-        return result
+        if not file_path.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+
+        # Read file content
+        content = file_path.read_text(encoding='utf-8', errors='replace')
+
+        return {
+            "path": str(file_path),
+            "content": content,
+            "size": file_path.stat().st_size
+        }
 
     except HTTPException:
         raise
