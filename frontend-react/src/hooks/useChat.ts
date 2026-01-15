@@ -1,6 +1,10 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Message, Session, ProgressData } from '../types';
-import { sendMessage, getSessions, deleteSession, getSessionHistory, getProgress } from '../services/api';
+import type { Message, Session, ProgressData } from '../types';
+import { sendMessage, getSessions, deleteSession, getSessionHistory, getProgress, isAuthenticated } from '../services/api';
+import api from '../services/api';
+
+// Connection status type
+type ConnectionStatus = 'connected' | 'disconnected' | 'checking';
 
 interface UseChatReturn {
   messages: Message[];
@@ -10,6 +14,7 @@ interface UseChatReturn {
   isLoading: boolean;
   progress: ProgressData | null;
   error: string | null;
+  connectionStatus: ConnectionStatus;
   sendUserMessage: (content: string) => Promise<void>;
   startNewChat: () => void;
   switchSession: (sessionId: string) => Promise<void>;
@@ -25,8 +30,36 @@ export function useChat(): UseChatReturn {
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState<ProgressData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('checking');
 
   const progressIntervalRef = useRef<number | null>(null);
+  const connectionCheckRef = useRef<number | null>(null);
+
+  // Check connection status (only if authenticated)
+  const checkConnection = useCallback(async () => {
+    if (!isAuthenticated()) {
+      setConnectionStatus('disconnected');
+      return;
+    }
+    try {
+      await api.get('/api/sessions', { timeout: 5000 });
+      setConnectionStatus('connected');
+    } catch {
+      setConnectionStatus('disconnected');
+    }
+  }, []);
+
+  // Start connection monitoring
+  useEffect(() => {
+    checkConnection(); // Initial check
+    connectionCheckRef.current = window.setInterval(checkConnection, 30000); // Check every 30s
+
+    return () => {
+      if (connectionCheckRef.current) {
+        clearInterval(connectionCheckRef.current);
+      }
+    };
+  }, [checkConnection]);
 
   // Cleanup progress polling
   const stopProgressPolling = useCallback(() => {
@@ -56,8 +89,12 @@ export function useChat(): UseChatReturn {
     progressIntervalRef.current = window.setInterval(poll, 1000);
   }, [stopProgressPolling]);
 
-  // Load sessions on mount
+  // Load sessions on mount (only if authenticated)
   const refreshSessions = useCallback(async () => {
+    if (!isAuthenticated()) {
+      setSessions([]);
+      return;
+    }
     try {
       const sessionList = await getSessions();
       setSessions(sessionList);
@@ -142,7 +179,25 @@ export function useChat(): UseChatReturn {
       }
 
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to send message';
+      // Parse error for better user feedback
+      let errorMessage = 'Failed to send message';
+
+      if (err instanceof Error) {
+        const message = err.message.toLowerCase();
+
+        if (message.includes('timeout') || message.includes('econnaborted')) {
+          errorMessage = 'Request timed out. Claude Code is still processing - please wait and try again in a moment.';
+        } else if (message.includes('network') || message.includes('econnrefused') || message.includes('enotfound')) {
+          errorMessage = 'Network error. Please check your connection and try again.';
+        } else if (message.includes('502') || message.includes('503') || message.includes('504')) {
+          errorMessage = 'Server temporarily unavailable. Please try again in a few seconds.';
+        } else if (message.includes('authentication') || message.includes('401')) {
+          errorMessage = 'Authentication error. The server may need to re-authenticate with Claude.';
+        } else {
+          errorMessage = err.message;
+        }
+      }
+
       setError(errorMessage);
 
       // Remove the placeholder message on error
@@ -218,6 +273,7 @@ export function useChat(): UseChatReturn {
     isLoading,
     progress,
     error,
+    connectionStatus,
     sendUserMessage,
     startNewChat,
     switchSession,

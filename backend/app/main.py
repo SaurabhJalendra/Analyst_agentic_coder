@@ -16,11 +16,18 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
-from app.database import init_db, get_db, Session as DBSession, Message, ToolCall
+from app.database import init_db, get_db, Session as DBSession, Message, ToolCall, User
 from app.workspace_manager import workspace_manager, get_claude_instance, cleanup_claude_instance, cleanup_all_claude_instances
 from app.db_utils import delete_session, list_sessions, validate_session_messages, cleanup_all_sessions
 from app.progress_tracker import ProgressTracker
 from app.git_utils import clone_repository
+from app.auth import (
+    UserCreate, UserLogin, Token, UserResponse,
+    get_current_user, get_current_user_optional, get_current_admin_user,
+    authenticate_user, create_user, get_user_by_username, get_user_by_email,
+    create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+)
+from datetime import datetime, timedelta
 
 # Setup logging
 structlog.configure(
@@ -77,6 +84,104 @@ class CloneRequest(BaseModel):
     branch: Optional[str] = None
     username: Optional[str] = None
     token: Optional[str] = None
+
+
+def scan_workspace_for_files(workspace_path: str, recent_only: bool = False) -> dict:
+    """Scan workspace for image and report files.
+
+    This helps detect generated visualizations even if Claude didn't
+    explicitly mention the file paths in its response.
+
+    Args:
+        workspace_path: Path to the session workspace
+        recent_only: If True, only look at files from last 5 minutes
+
+    Returns:
+        Dictionary with 'images' and 'reports' lists containing relative paths
+    """
+    import os
+    from datetime import datetime
+
+    result = {"images": [], "reports": []}
+    workspace = Path(workspace_path)
+
+    if not workspace.exists():
+        return result
+
+    # Cutoff time for recent files (5 minutes ago)
+    cutoff_time = datetime.now().timestamp() - 300 if recent_only else 0
+
+    image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.svg'}
+    report_extensions = {'.html', '.pdf', '.xlsx'}
+    # Note: Excluding .csv from reports to avoid showing data files as reports
+
+    try:
+        # Walk through workspace looking for relevant files
+        for root, dirs, files in os.walk(workspace):
+            # Skip hidden directories and common non-output directories
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', '__pycache__', 'venv', '.git', 'data', 'raw']]
+
+            for file in files:
+                file_path = Path(root) / file
+                ext = file_path.suffix.lower()
+
+                # Skip files not matching our extensions
+                if ext not in image_extensions and ext not in report_extensions:
+                    continue
+
+                # Check modification time if filtering recent only
+                if recent_only:
+                    try:
+                        mtime = file_path.stat().st_mtime
+                        if mtime < cutoff_time:
+                            continue
+                    except:
+                        continue
+
+                # Get relative path from workspace/repo
+                try:
+                    if '/repo/' in str(file_path):
+                        # Get path relative to repo directory
+                        repo_idx = str(file_path).find('/repo/')
+                        rel_path = str(file_path)[repo_idx + 6:]  # Skip '/repo/'
+                    else:
+                        rel_path = str(file_path.relative_to(workspace))
+                except:
+                    rel_path = file_path.name
+
+                if ext in image_extensions:
+                    result["images"].append((rel_path, file_path.stat().st_mtime))
+                elif ext in report_extensions:
+                    result["reports"].append((rel_path, file_path.stat().st_mtime))
+
+        # Sort by modification time (most recent first) and extract just paths
+        result["images"] = [path for path, _ in sorted(result["images"], key=lambda x: -x[1])]
+        result["reports"] = [path for path, _ in sorted(result["reports"], key=lambda x: -x[1])]
+
+    except Exception as e:
+        logger.error("scan_workspace_error", error=str(e), workspace=workspace_path)
+
+    return result
+
+
+def get_new_files(before_files: dict, after_files: dict) -> dict:
+    """Get files that are new (exist in after but not in before).
+
+    Args:
+        before_files: Files scanned before operation
+        after_files: Files scanned after operation
+
+    Returns:
+        Dictionary with 'images' and 'reports' lists containing only NEW files
+    """
+    before_images = set(before_files.get("images", []))
+    before_reports = set(before_files.get("reports", []))
+
+    new_images = [f for f in after_files.get("images", []) if f not in before_images]
+    new_reports = [f for f in after_files.get("reports", []) if f not in before_reports]
+
+    return {"images": new_images, "reports": new_reports}
+
 
 @app.on_event("startup")
 async def startup():
@@ -250,8 +355,141 @@ async def health():
     """Health check endpoint for Docker and monitoring."""
     return {"status": "healthy", "service": "claude-code-chatbot-api"}
 
+
+# ============== Authentication Endpoints ==============
+
+@app.post("/api/auth/register", response_model=Token)
+async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
+    """Register a new user."""
+    try:
+        # Check if username already exists
+        existing_user = await get_user_by_username(db, user_data.username)
+        if existing_user:
+            raise HTTPException(
+                status_code=400,
+                detail="Username already registered"
+            )
+
+        # Check if email already exists
+        existing_email = await get_user_by_email(db, user_data.email)
+        if existing_email:
+            raise HTTPException(
+                status_code=400,
+                detail="Email already registered"
+            )
+
+        # Create user
+        user = await create_user(db, user_data)
+
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": user.username, "user_id": user.id}
+        )
+
+        logger.info("user_registered", username=user.username)
+
+        return Token(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            user={
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "is_admin": user.is_admin
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("register_error", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/auth/login", response_model=Token)
+async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
+    """Login and get access token."""
+    try:
+        user = await authenticate_user(db, user_data.username, user_data.password)
+
+        if not user:
+            raise HTTPException(
+                status_code=401,
+                detail="Incorrect username or password"
+            )
+
+        # Update last login
+        user.last_login = datetime.utcnow()
+        await db.commit()
+
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": user.username, "user_id": user.id}
+        )
+
+        logger.info("user_logged_in", username=user.username)
+
+        return Token(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            user={
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "is_admin": user.is_admin
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("login_error", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/auth/me", response_model=UserResponse)
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    """Get current user information."""
+    return UserResponse(
+        id=current_user.id,
+        username=current_user.username,
+        email=current_user.email,
+        is_active=current_user.is_active,
+        is_admin=current_user.is_admin,
+        created_at=current_user.created_at
+    )
+
+
+@app.post("/api/auth/refresh", response_model=Token)
+async def refresh_token(current_user: User = Depends(get_current_user)):
+    """Refresh access token."""
+    access_token = create_access_token(
+        data={"sub": current_user.username, "user_id": current_user.id}
+    )
+
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user={
+            "id": current_user.id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "is_admin": current_user.is_admin
+        }
+    )
+
+
+# ============== Protected Chat Endpoints ==============
+
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
+async def chat(
+    request: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """Handle chat message using Claude Code CLI with automatic tool execution."""
     session_id = None
     try:
@@ -262,11 +500,15 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             session = result.scalar_one_or_none()
             if not session:
                 raise HTTPException(status_code=404, detail="Session not found")
+            # Verify session belongs to current user
+            if session.user_id and session.user_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Access denied to this session")
         else:
             session_id = str(uuid.uuid4())
             workspace_path = workspace_manager.create_session_workspace(session_id)
             session = DBSession(
                 id=session_id,
+                user_id=current_user.id,
                 workspace_path=str(workspace_path),
                 active_repo=None  # Will be set after cloning default repo
             )
@@ -286,12 +528,21 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
                 )
 
                 try:
+                    # Get GitHub credentials from environment
+                    github_token = os.getenv("GITHUB_ACCESS_TOKEN")
+                    git_credentials = None
+                    if github_token:
+                        git_credentials = {
+                            "username": "git",  # GitHub uses 'git' as username with PAT
+                            "token": github_token
+                        }
+
                     # Clone the default repository
                     clone_result = await clone_repository(
                         url=default_repo_url,
                         destination=Path(session.workspace_path) / "repo",
                         branch=default_repo_branch,
-                        credentials=None
+                        credentials=git_credentials
                     )
 
                     if "error" not in clone_result:
@@ -342,6 +593,9 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         if session.active_repo:
             workspace_path = session.active_repo
 
+        # Scan workspace BEFORE sending message to track existing files
+        files_before = scan_workspace_for_files(session.workspace_path)
+
         claude_code_service = await get_claude_instance(session_id, workspace_path)
 
         # Send message to Claude Code CLI (it handles all tool execution autonomously)
@@ -349,7 +603,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
 
         claude_response = await claude_code_service.send_message(
             user_message=request.message,
-            timeout=600  # 10 minute timeout for long-running tasks
+            timeout=7200  # 2 hour timeout for very long-running tasks
         )
 
         # Extract response text
@@ -386,6 +640,21 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
 
         if errors:
             response_text += "\n\n**Errors:**\n" + "\n".join(errors)
+
+        # Scan workspace AFTER response to find NEW files created during this interaction
+        # This ensures each message only shows visualizations generated for THAT specific message
+        files_after = scan_workspace_for_files(session.workspace_path)
+        new_files = get_new_files(files_before, files_after)
+
+        if new_files["images"] or new_files["reports"]:
+            if new_files["images"]:
+                response_text += "\n\n**Generated Visualizations:**\n"
+                for img_path in new_files["images"]:
+                    response_text += f"- `{img_path}`\n"
+            if new_files["reports"]:
+                response_text += "\n\n**Generated Reports:**\n"
+                for report_path in new_files["reports"]:
+                    response_text += f"- `{report_path}`\n"
 
         # Save assistant message
         assistant_message = Message(
@@ -577,19 +846,54 @@ async def read_file(path: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/sessions")
-async def get_sessions(db: AsyncSession = Depends(get_db)):
-    """List all sessions."""
+async def get_sessions(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """List all sessions for current user."""
+    from sqlalchemy.orm import selectinload
     try:
-        sessions = await list_sessions(db)
-        return {"sessions": sessions}
+        # Filter sessions by user_id, eagerly load messages for count
+        result = await db.execute(
+            select(DBSession)
+            .options(selectinload(DBSession.messages))
+            .where(DBSession.user_id == current_user.id)
+            .order_by(DBSession.created_at.desc())
+        )
+        sessions = result.scalars().all()
+
+        return {
+            "sessions": [
+                {
+                    "id": s.id,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                    "workspace_path": s.workspace_path,
+                    "active_repo": s.active_repo,
+                    "message_count": len(s.messages) if s.messages else 0
+                }
+                for s in sessions
+            ]
+        }
     except Exception as e:
         logger.error("list_sessions_error", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session_endpoint(session_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_session_endpoint(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """Delete a specific session and all associated data, including Claude Code instance."""
     try:
+        # Verify session belongs to current user
+        result = await db.execute(select(DBSession).where(DBSession.id == session_id))
+        session = result.scalar_one_or_none()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if session.user_id and session.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied to this session")
+
         # Cleanup Claude Code instance if running
         await cleanup_claude_instance(session_id)
 
@@ -701,6 +1005,37 @@ async def serve_workspace_file(session_id: str, file_path: str, db: AsyncSession
         raise
     except Exception as e:
         logger.error("serve_file_error", error=str(e), session_id=session_id, file_path=file_path)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/workspace/{session_id}/visualizations")
+async def get_session_visualizations(session_id: str, db: AsyncSession = Depends(get_db)):
+    """Get all visualization files (images and reports) for a session.
+
+    This endpoint returns all generated images and reports in the workspace,
+    which can be displayed in the chat interface.
+    """
+    try:
+        # Get session
+        result = await db.execute(select(DBSession).where(DBSession.id == session_id))
+        session = result.scalar_one_or_none()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Scan workspace for files (no time restriction)
+        files = scan_workspace_for_files(session.workspace_path, recent_only=False)
+
+        return {
+            "session_id": session_id,
+            "images": files["images"],
+            "reports": files["reports"],
+            "base_url": f"/api/workspace/{session_id}/files/repo"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("get_visualizations_error", error=str(e), session_id=session_id)
         raise HTTPException(status_code=500, detail=str(e))
 
 

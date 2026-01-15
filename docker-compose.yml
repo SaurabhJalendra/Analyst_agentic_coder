@@ -1,6 +1,28 @@
 version: '3.8'
 
 services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: analyst-coder-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-coolbot}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-coolbot_secret_2024}
+      - POSTGRES_DB=${POSTGRES_DB:-coolbot_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-coolbot} -d ${POSTGRES_DB:-coolbot_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - analyst-coder-network
+
   # Backend API Service
   backend:
     build:
@@ -18,15 +40,21 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - WORKSPACE_BASE_DIR=/app/workspaces
       - MAX_CONTEXT_LENGTH=${MAX_CONTEXT_LENGTH:-200000}
+      # PostgreSQL configuration
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-coolbot}:${POSTGRES_PASSWORD:-coolbot_secret_2024}@postgres:5432/${POSTGRES_DB:-coolbot_db}
+      # JWT Authentication
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-coolbot-super-secret-jwt-key-2024-change-in-production}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
     volumes:
       # Persist workspaces between restarts
       - workspaces_data:/app/workspaces
-      # Persist SQLite database
-      - db_data:/app/data
-      # Claude Code config (for authentication)
-      - claude_config:/home/appuser/.claude
+      # Mount host's Claude credentials directly (auto-syncs when you run `claude /login`)
+      - /home/ubuntu/.claude:/home/appuser/.claude:rw
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -60,9 +88,7 @@ services:
 volumes:
   workspaces_data:
     driver: local
-  db_data:
-    driver: local
-  claude_config:
+  postgres_data:
     driver: local
 
 networks:

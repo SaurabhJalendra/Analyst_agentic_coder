@@ -18,8 +18,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code CLI globally
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI globally (always get latest version)
+RUN npm install -g @anthropic-ai/claude-code@latest
 
 # Create app directory
 WORKDIR /app
@@ -40,9 +40,7 @@ COPY . .
 RUN useradd -m -u 1000 appuser && \
     chown -R appuser:appuser /app
 
-# Create Claude config directory for the user
-RUN mkdir -p /home/appuser/.claude && \
-    chown -R appuser:appuser /home/appuser/.claude
+# Note: Claude config directory is mounted from host at runtime
 
 USER appuser
 

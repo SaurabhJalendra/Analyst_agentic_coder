@@ -2,17 +2,23 @@
 Claude Code CLI Service - Using --print mode for reliable non-interactive operation
 
 Uses subprocess with --print mode instead of terminal emulation for reliability.
+Includes automatic OAuth token refresh to prevent authentication failures.
 """
 
 import asyncio
 import subprocess
 import json
 import os
+import time
+import httpx
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+# Anthropic OAuth token refresh endpoint
+ANTHROPIC_TOKEN_REFRESH_URL = "https://console.anthropic.com/v1/oauth/token"
 
 
 class ClaudeCodeService:
@@ -34,15 +40,165 @@ class ClaudeCodeService:
         """
         self.workspace_path = Path(workspace_path)
         self.session_id = session_id
-        self.claude_executable = claude_executable or r"C:\Users\Saurabh\.local\bin\claude.exe"
+        self.claude_executable = claude_executable or self._find_claude_executable()
         self.is_ready = False
         self.conversation_history: List[Dict] = []
+        # Store Claude Code's internal session ID for conversation continuity
+        self.claude_session_id: Optional[str] = None
 
         logger.info(
             "Initialized Claude Code service",
             session_id=session_id,
             workspace=str(workspace_path)
         )
+
+    def _find_claude_executable(self) -> str:
+        """Find the Claude CLI executable path"""
+        import shutil
+
+        # Try to find claude in PATH
+        claude_path = shutil.which("claude")
+        if claude_path:
+            return claude_path
+
+        # Common installation locations
+        common_paths = [
+            "/usr/local/bin/claude",
+            "/usr/bin/claude",
+            os.path.expanduser("~/.local/bin/claude"),
+            "/home/appuser/.local/bin/claude",
+        ]
+
+        for path in common_paths:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+
+        # Default fallback
+        return "claude"
+
+    async def refresh_oauth_token(self) -> bool:
+        """
+        Refresh the OAuth access token using the refresh token.
+
+        Returns:
+            True if refresh was successful, False otherwise
+        """
+        refresh_token = os.getenv("CLAUDE_CODE_REFRESH_TOKEN")
+        if not refresh_token:
+            logger.error("No refresh token available", session_id=self.session_id)
+            return False
+
+        logger.info("Attempting to refresh OAuth token", session_id=self.session_id)
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    ANTHROPIC_TOKEN_REFRESH_URL,
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                    },
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    timeout=30.0
+                )
+
+                if response.status_code == 200:
+                    token_data = response.json()
+                    new_access_token = token_data.get("access_token")
+                    new_refresh_token = token_data.get("refresh_token", refresh_token)
+                    expires_in = token_data.get("expires_in", 3600)
+
+                    if new_access_token:
+                        # Update environment variables
+                        os.environ["CLAUDE_CODE_ACCESS_TOKEN"] = new_access_token
+                        if new_refresh_token != refresh_token:
+                            os.environ["CLAUDE_CODE_REFRESH_TOKEN"] = new_refresh_token
+
+                        # Update credentials in workspace
+                        self._update_credentials(new_access_token, new_refresh_token, expires_in)
+
+                        logger.info(
+                            "OAuth token refreshed successfully",
+                            session_id=self.session_id,
+                            expires_in=expires_in
+                        )
+                        return True
+                    else:
+                        logger.error(
+                            "Token refresh response missing access_token",
+                            session_id=self.session_id
+                        )
+                        return False
+                else:
+                    logger.error(
+                        "Token refresh failed",
+                        session_id=self.session_id,
+                        status_code=response.status_code,
+                        response=response.text[:500]
+                    )
+                    return False
+
+        except Exception as e:
+            logger.error(
+                "Token refresh error",
+                session_id=self.session_id,
+                error=str(e)
+            )
+            return False
+
+    def _update_credentials(self, access_token: str, refresh_token: str, expires_in: int = 3600):
+        """
+        Update credentials file with new tokens
+        """
+        claude_dir = self.workspace_path / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+
+        # Calculate expiration timestamp (current time + expires_in seconds, converted to milliseconds)
+        expires_at = int((time.time() + expires_in) * 1000)
+
+        auth_config = {
+            "claudeAiOauth": {
+                "accessToken": access_token,
+                "refreshToken": refresh_token,
+                "expiresAt": expires_at,
+                "scopes": ["user:inference", "user:profile", "user:sessions:claude_code"],
+                "subscriptionType": "max",
+                "rateLimitTier": "default_claude_max_5x"
+            }
+        }
+
+        credentials_file = claude_dir / ".credentials.json"
+        try:
+            credentials_file.write_text(json.dumps(auth_config, indent=2))
+            logger.info(
+                "Updated credentials file",
+                session_id=self.session_id,
+                expires_at=expires_at
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to update credentials file",
+                session_id=self.session_id,
+                error=str(e)
+            )
+
+    def _is_auth_error(self, stderr: str, stdout: str) -> bool:
+        """
+        Check if the error is an authentication/token expiration error
+        """
+        error_indicators = [
+            "authentication_error",
+            "OAuth token has expired",
+            "token has expired",
+            "Please obtain a new token",
+            "Please run /login",
+            "401",
+            "Unauthorized"
+        ]
+        combined = (stderr or "") + (stdout or "")
+        return any(indicator in combined for indicator in error_indicators)
 
     async def start(self):
         """
@@ -94,13 +250,14 @@ class ClaudeCodeService:
         self.is_ready = True
         logger.info("Claude Code service ready", session_id=self.session_id)
 
-    async def send_message(self, user_message: str, timeout: int = 300) -> Dict[str, Any]:
+    async def send_message(self, user_message: str, timeout: int = 300, _retry_count: int = 0) -> Dict[str, Any]:
         """
         Send message to Claude Code using --print mode
 
         Args:
             user_message: User's message/request
             timeout: Maximum time to wait for response (seconds)
+            _retry_count: Internal retry counter for auth refresh (do not set manually)
 
         Returns:
             Structured response with text, tool calls, outputs, etc.
@@ -111,7 +268,8 @@ class ClaudeCodeService:
         logger.info(
             "Sending message to Claude Code",
             session_id=self.session_id,
-            message_preview=user_message[:100]
+            message_preview=user_message[:100],
+            retry_count=_retry_count
         )
 
         try:
@@ -125,14 +283,32 @@ class ClaudeCodeService:
                 "--dangerously-skip-permissions"  # Since we setup permissions ourselves
             ]
 
-            # Add conversation continuation if we have history
-            # Note: Claude Code maintains context via its own session management
+            # Add conversation continuation using --resume flag if we have a previous session
+            if self.claude_session_id:
+                cmd.extend(["--resume", self.claude_session_id])
+                logger.info(
+                    "Resuming Claude Code session",
+                    session_id=self.session_id,
+                    claude_session_id=self.claude_session_id
+                )
 
             logger.debug(
                 "Running Claude command",
                 session_id=self.session_id,
-                cwd=str(self.workspace_path)
+                cwd=str(self.workspace_path),
+                cmd=" ".join(cmd[:5]) + "..."  # Log first few args
             )
+
+            # Setup environment with Claude config directory
+            claude_env = {**os.environ}
+            # Use credentials from home directory (mounted from host via docker-compose)
+            # This allows auto-sync when `claude /login` is run on the host
+            home_claude_dir = Path.home() / ".claude"
+            if home_claude_dir.exists():
+                claude_env["CLAUDE_CONFIG_DIR"] = str(home_claude_dir)
+            else:
+                # Fallback to workspace's .claude directory
+                claude_env["CLAUDE_CONFIG_DIR"] = str(self.workspace_path / ".claude")
 
             # Run Claude Code
             result = await asyncio.to_thread(
@@ -142,7 +318,7 @@ class ClaudeCodeService:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                env={**os.environ}  # Pass through environment including auth tokens
+                env=claude_env
             )
 
             # Log output for debugging
@@ -153,6 +329,28 @@ class ClaudeCodeService:
                 stderr_len=len(result.stderr) if result.stderr else 0,
                 returncode=result.returncode
             )
+
+            # Check for authentication errors and retry with token refresh
+            if result.returncode != 0 and self._is_auth_error(result.stderr, result.stdout):
+                if _retry_count < 1:  # Only retry once
+                    logger.warning(
+                        "Authentication error detected, attempting token refresh",
+                        session_id=self.session_id
+                    )
+                    refresh_success = await self.refresh_oauth_token()
+                    if refresh_success:
+                        # Re-setup credentials and retry
+                        self._setup_autonomous_permissions()
+                        logger.info(
+                            "Token refreshed, retrying request",
+                            session_id=self.session_id
+                        )
+                        return await self.send_message(user_message, timeout, _retry_count + 1)
+                    else:
+                        logger.error(
+                            "Token refresh failed, cannot retry",
+                            session_id=self.session_id
+                        )
 
             # Parse response
             response = self._parse_response(result.stdout, result.stderr, result.returncode)
@@ -214,11 +412,17 @@ class ClaudeCodeService:
             Structured response dict
         """
         errors = []
+        tool_calls = []
+        files_created = []
+        files_modified = []
 
         # Check for errors
         if returncode != 0:
             if stderr:
-                errors.append(f"Claude exited with code {returncode}: {stderr}")
+                errors.append(f"Claude exited with code {returncode}")
+                # Include stderr details but don't duplicate
+                if "Errors:" not in stderr:
+                    errors.append(stderr)
             else:
                 errors.append(f"Claude exited with code {returncode}")
 
@@ -228,7 +432,18 @@ class ClaudeCodeService:
                 # --output-format json should give us structured output
                 parsed = json.loads(stdout)
 
-                # Extract text content
+                # Extract session ID for conversation continuity
+                if isinstance(parsed, dict):
+                    session_id = parsed.get("session_id") or parsed.get("sessionId")
+                    if session_id:
+                        self.claude_session_id = session_id
+                        logger.info(
+                            "Captured Claude session ID for continuity",
+                            session_id=self.session_id,
+                            claude_session_id=session_id
+                        )
+
+                # Extract text content and tool information
                 text_content = ""
                 if isinstance(parsed, dict):
                     # Handle various JSON structures Claude might return
@@ -237,18 +452,39 @@ class ClaudeCodeService:
                     elif "content" in parsed:
                         content = parsed["content"]
                         if isinstance(content, list):
-                            text_parts = [
-                                c.get("text", str(c))
-                                for c in content
-                                if isinstance(c, dict)
-                            ]
+                            text_parts = []
+                            for c in content:
+                                if isinstance(c, dict):
+                                    if c.get("type") == "text":
+                                        text_parts.append(c.get("text", ""))
+                                    elif c.get("type") == "tool_use":
+                                        tool_calls.append({
+                                            "id": c.get("id"),
+                                            "name": c.get("name"),
+                                            "input": c.get("input", {})
+                                        })
+                                    elif c.get("type") == "tool_result":
+                                        # Include tool results in text
+                                        result = c.get("content", "")
+                                        if result:
+                                            text_parts.append(f"\n**Tool Result:**\n{result}")
                             text_content = "\n".join(text_parts)
                         else:
                             text_content = str(content)
                     elif "message" in parsed:
                         text_content = parsed["message"]
                     else:
-                        text_content = json.dumps(parsed, indent=2)
+                        # Try to extract meaningful text from the response
+                        text_content = parsed.get("text", "") or json.dumps(parsed, indent=2)
+
+                    # Extract tool calls if present at top level
+                    if "tool_calls" in parsed:
+                        tool_calls.extend(parsed["tool_calls"])
+
+                    # Extract file operations
+                    files_created = parsed.get("files_created", [])
+                    files_modified = parsed.get("files_modified", [])
+
                 elif isinstance(parsed, str):
                     text_content = parsed
                 else:
@@ -261,14 +497,23 @@ class ClaudeCodeService:
                             "text": text_content
                         }
                     ],
-                    "tool_calls": parsed.get("tool_calls", []) if isinstance(parsed, dict) else [],
+                    "tool_calls": tool_calls,
+                    "files_created": files_created,
+                    "files_modified": files_modified,
                     "stop_reason": "end_turn",
                     "errors": errors,
-                    "raw_output": stdout
+                    "raw_output": stdout,
+                    "claude_session_id": self.claude_session_id
                 }
 
             except json.JSONDecodeError:
-                # Not JSON, treat as plain text
+                # Not JSON, treat as plain text - still might contain useful output
+                # Try to extract session ID from text if present
+                import re
+                session_match = re.search(r'session[_-]?id["\s:]+([a-f0-9-]{36})', stdout, re.IGNORECASE)
+                if session_match:
+                    self.claude_session_id = session_match.group(1)
+
                 return {
                     "content": [
                         {
@@ -277,9 +522,12 @@ class ClaudeCodeService:
                         }
                     ],
                     "tool_calls": [],
+                    "files_created": [],
+                    "files_modified": [],
                     "stop_reason": "end_turn",
                     "errors": errors,
-                    "raw_output": stdout
+                    "raw_output": stdout,
+                    "claude_session_id": self.claude_session_id
                 }
 
         # No stdout
@@ -292,7 +540,8 @@ class ClaudeCodeService:
                     }
                 ],
                 "errors": errors or [stderr],
-                "stop_reason": "error"
+                "stop_reason": "error",
+                "claude_session_id": self.claude_session_id
             }
 
         return {
@@ -303,7 +552,8 @@ class ClaudeCodeService:
                 }
             ],
             "errors": errors or ["No output"],
-            "stop_reason": "error"
+            "stop_reason": "error",
+            "claude_session_id": self.claude_session_id
         }
 
     async def stop(self):
@@ -357,7 +607,7 @@ class ClaudeCodeService:
             )
             raise
 
-        # Setup authentication credentials for this workspace
+        # Create credentials from environment variables
         access_token = os.getenv("CLAUDE_CODE_ACCESS_TOKEN")
         refresh_token = os.getenv("CLAUDE_CODE_REFRESH_TOKEN")
 
@@ -366,21 +616,20 @@ class ClaudeCodeService:
                 "claudeAiOauth": {
                     "accessToken": access_token,
                     "refreshToken": refresh_token,
-                    "expiresAt": 1763987494015,
+                    "expiresAt": 1864430294792,
                     "scopes": ["user:inference", "user:profile", "user:sessions:claude_code"],
                     "subscriptionType": "max",
                     "rateLimitTier": "default_claude_max_5x"
                 }
             }
 
-            config_file = claude_dir / "config.json"
-
+            credentials_file = claude_dir / ".credentials.json"
             try:
-                config_file.write_text(json.dumps(auth_config, indent=2))
+                credentials_file.write_text(json.dumps(auth_config, indent=2))
                 logger.info(
-                    "Configured Claude Code authentication",
+                    "Created Claude credentials from environment",
                     session_id=self.session_id,
-                    config_file=str(config_file)
+                    config_file=str(credentials_file)
                 )
             except Exception as e:
                 logger.error(
