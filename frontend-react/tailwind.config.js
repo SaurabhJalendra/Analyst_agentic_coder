@@ -31,7 +31,21 @@ export default {
           800: '#1e293b',
           900: '#0f172a',
           950: '#020617',
+        },
+        brand: {
+          900: '#0a1929',
+          800: '#0f1f3a',
+          700: '#1e293b',
+        },
+        gold: {
+          500: '#d4a017',
+          600: '#c49014',
+          700: '#b8860b',
         }
+      },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
