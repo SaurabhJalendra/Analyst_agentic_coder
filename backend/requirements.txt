@@ -20,6 +20,9 @@ httpx
 # Logging
 structlog
 
+# PDF generation
+reportlab>=4.0.0
+
 # Development and testing
 sse-starlette>=2.0.0
 hypothesis>=6.100.0

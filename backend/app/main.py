@@ -1,13 +1,16 @@
 """FastAPI main application."""
 import asyncio
 import os
+import sqlite3
 import uuid
 import traceback
+from io import BytesIO
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -104,6 +107,34 @@ class CloneRequest(BaseModel):
     branch: Optional[str] = None
     username: Optional[str] = None
     token: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 – Pydantic models
+# ---------------------------------------------------------------------------
+
+class AuditRow(BaseModel):
+    id: int
+    ts: str
+    event_type: str
+    audit_id: str
+    data: dict
+
+
+class AuditLogResponse(BaseModel):
+    session_id: str
+    rows: List[AuditRow]
+    next_before_id: int | None = None
+
+
+class PDFExportRequest(BaseModel):
+    session_id: str
+    artifact_ids: list[str] | None = None
+    narrative: str | None = None
+
+
+# Path to the audit/artifacts SQLite DB (overridable in tests via monkeypatch)
+_audit_db_path: Path = Path(__file__).parent.parent / "chatbot.db"
 
 @app.on_event("startup")
 async def startup():
@@ -724,6 +755,327 @@ async def list_workspace_directory(session_id: str, directory_path: str = "", db
     except Exception as e:
         logger.error("list_workspace_error", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/audit/{session_id}", response_model=AuditLogResponse)
+async def get_audit_log(
+    session_id: str,
+    limit: int = 50,
+    before_id: int | None = None,
+) -> AuditLogResponse:
+    """Return paginated audit log rows for a session (most-recent first)."""
+    try:
+        conn = sqlite3.connect(_audit_db_path)
+        try:
+            if before_id is not None:
+                cur = conn.execute(
+                    "SELECT id, ts, event_type, audit_id, data_json "
+                    "FROM audit_log "
+                    "WHERE session_id = ? AND id < ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (session_id, before_id, limit),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT id, ts, event_type, audit_id, data_json "
+                    "FROM audit_log "
+                    "WHERE session_id = ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (session_id, limit),
+                )
+            db_rows = cur.fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("audit_log_error", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    import json as _json
+
+    rows = [
+        AuditRow(
+            id=r[0],
+            ts=r[1],
+            event_type=r[2],
+            audit_id=r[3],
+            data=_json.loads(r[4]),
+        )
+        for r in db_rows
+    ]
+    next_before_id = rows[-1].id if len(rows) == limit else None
+    return AuditLogResponse(session_id=session_id, rows=rows, next_before_id=next_before_id)
+
+
+@app.get("/api/artifacts/{artifact_id}/methodology")
+async def get_artifact_methodology(artifact_id: str) -> dict[str, object]:  # noqa: PLR0912
+    """Return a structured methodology summary for how an artifact was produced."""
+    import json as _json
+
+    art_row: tuple[str, ...] | None = None
+    audit_rows: list[tuple[str, ...]] = []
+    try:
+        conn = sqlite3.connect(_audit_db_path)
+        try:
+            # Fetch the artifact record
+            art_row = conn.execute(
+                "SELECT id, session_id, kind, title, source_attribution, "
+                "methodology_id, file_path, created_at "
+                "FROM artifacts WHERE id = ?",
+                (artifact_id,),
+            ).fetchone()
+
+            if art_row is not None:
+                _art_session_id = art_row[1]
+                # Walk the audit log for the same session to collect context
+                audit_rows = conn.execute(
+                    "SELECT id, ts, event_type, data_json FROM audit_log "
+                    "WHERE session_id = ? ORDER BY id ASC",
+                    (_art_session_id,),
+                ).fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("methodology_error", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    if art_row is None:
+        raise HTTPException(status_code=404, detail=f"Artifact '{artifact_id}' not found")
+
+    (
+        art_id, session_id, kind, title,
+        source_attribution, methodology_id, file_path, created_at,
+    ) = art_row
+
+    # Parse audit rows into structured data
+    tool_calls: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    agents: set[str] = set()
+
+    for _row_id, _ts, event_type, data_json in audit_rows:
+        try:
+            data = _json.loads(data_json)
+        except _json.JSONDecodeError:
+            continue
+
+        if event_type == "tool.start":
+            tool_calls.append({
+                "tool": data.get("tool", "unknown"),
+                "args_redacted": data.get("args_redacted", {}),
+                "duration_ms": None,
+            })
+            if agent_id := data.get("agent_id"):
+                agents.add(agent_id)
+        elif event_type == "tool.done":
+            # Backfill duration on last tool.start with matching call_id
+            call_id = data.get("call_id")
+            for tc in reversed(tool_calls):
+                if tc.get("_call_id") == call_id and tc["duration_ms"] is None:
+                    tc["duration_ms"] = data.get("duration_ms")
+                    break
+        elif event_type == "source":
+            source_name = data.get("source", "unknown")
+            existing = next((s for s in sources if s["source"] == source_name), None)
+            if existing:
+                existing["count"] = existing.get("count", 0) + 1
+            else:
+                sources.append({
+                    "source": source_name,
+                    "operation": data.get("operation", ""),
+                    "count": 1,
+                })
+        elif event_type in ("subagent.spawn", "subagent.done"):
+            if agent_id := data.get("agent_id"):
+                agents.add(agent_id)
+
+    # Build narrative (templated, no LLM)
+    tool_names: list[str] = list({str(tc["tool"]) for tc in tool_calls})
+    source_names: list[str] = [str(s["source"]) for s in sources]
+    agents_list = sorted(agents) or ["main"]
+
+    tool_names_str = ", ".join(tool_names) if tool_names else "none"
+    source_names_str = ", ".join(source_names) if source_names else "none"
+    agents_str = "`, `".join(agents_list)
+    narrative = (
+        f"Generated by agent(s) `{agents_str}` using {len(tool_calls)} tool call(s) "
+        f"({tool_names_str}). "
+        f"Accessed {len(sources)} data source(s) ({source_names_str}).\n\n"
+        f"This artifact was produced during session `{session_id}`. "
+        f"The audit trail above captures every tool invocation and source access that "
+        f"occurred in that session and may have contributed to this artifact."
+    )
+
+    return {
+        "artifact_id": art_id,
+        "title": title,
+        "source_attribution": source_attribution,
+        "created_at": created_at,
+        "methodology": {
+            "tool_calls": tool_calls,
+            "sources": sources,
+            "agents_involved": agents_list,
+            "narrative": narrative,
+        },
+    }
+
+
+@app.post("/api/export/pdf")
+async def export_pdf(body: PDFExportRequest) -> StreamingResponse:  # noqa: PLR0915
+    """Generate a branded PDF report for one or more artifacts."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, PageBreak, HRFlowable,
+    )
+
+    session_id = body.session_id
+
+    # Fetch artifacts from DB.
+    # If artifact_ids is explicitly set to an empty list, skip the DB entirely.
+    art_rows: list[tuple[str, ...]] = []
+    if body.artifact_ids is None or len(body.artifact_ids) > 0:
+        try:
+            conn = sqlite3.connect(_audit_db_path)
+            try:
+                if body.artifact_ids:
+                    placeholders = ",".join("?" * len(body.artifact_ids))
+                    art_rows = conn.execute(
+                        f"SELECT id, title, source_attribution, file_path, created_at "  # noqa: S608
+                        f"FROM artifacts WHERE session_id = ? AND id IN ({placeholders})",
+                        [session_id, *body.artifact_ids],
+                    ).fetchall()
+                else:
+                    # artifact_ids is None: export all for this session
+                    art_rows = conn.execute(
+                        "SELECT id, title, source_attribution, file_path, created_at "
+                        "FROM artifacts WHERE session_id = ?",
+                        (session_id,),
+                    ).fetchall()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error("pdf_export_db_error", error=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        rightMargin=2 * cm,
+        leftMargin=2 * cm,
+        topMargin=2.5 * cm,
+        bottomMargin=2.5 * cm,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "QCTitle",
+        parent=styles["Title"],
+        fontSize=28,
+        spaceAfter=12,
+        textColor=colors.HexColor("#1a1a2e"),
+    )
+    heading_style = ParagraphStyle(
+        "QCHeading",
+        parent=styles["Heading1"],
+        fontSize=16,
+        spaceBefore=18,
+        spaceAfter=6,
+        textColor=colors.HexColor("#16213e"),
+    )
+    subheading_style = ParagraphStyle(
+        "QCSubheading",
+        parent=styles["Heading2"],
+        fontSize=12,
+        spaceBefore=10,
+        spaceAfter=4,
+        textColor=colors.HexColor("#0f3460"),
+    )
+    body_style = styles["BodyText"]
+    small_style = ParagraphStyle(
+        "QCSmall",
+        parent=styles["BodyText"],
+        fontSize=8,
+        textColor=colors.grey,
+    )
+
+    story = []
+
+    # --- Cover page ---
+    story.append(Spacer(1, 3 * cm))
+    story.append(Paragraph("Quant Console", title_style))
+    story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#1a1a2e")))
+    story.append(Spacer(1, 0.5 * cm))
+    story.append(Paragraph(f"Session: <b>{session_id}</b>", body_style))
+    report_date = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    story.append(Paragraph(f"Report Date: <b>{report_date}</b>", body_style))
+    story.append(Paragraph(f"Artifacts: <b>{len(art_rows)}</b>", body_style))
+    story.append(PageBreak())
+
+    # --- One section per artifact ---
+    for art_id, art_title, source_attr, file_path, created_at in art_rows:
+        story.append(Paragraph(art_title or "Untitled Artifact", heading_style))
+        story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#0f3460")))
+        story.append(Paragraph(f"Artifact ID: {art_id}", small_style))
+        story.append(Paragraph(f"Created: {created_at}", small_style))
+        story.append(Spacer(1, 0.3 * cm))
+        story.append(Paragraph(f"<b>Source Attribution:</b> {source_attr}", body_style))
+
+        if file_path:
+            story.append(Spacer(1, 0.2 * cm))
+            story.append(Paragraph(f"See attached file: <i>{file_path}</i>", small_style))
+
+        story.append(Spacer(1, 0.5 * cm))
+        story.append(Paragraph("How this was made", subheading_style))
+        methodology_text = (
+            f"Methodology details are available via the "
+            f"<b>/api/artifacts/{art_id}/methodology</b> endpoint. "
+            "The full audit trail records every tool call, source access, "
+            "and agent activity that contributed to this artifact."
+        )
+        story.append(Paragraph(methodology_text, body_style))
+        story.append(PageBreak())
+
+    # --- Optional narrative ---
+    if body.narrative:
+        story.append(Paragraph("Additional Notes", heading_style))
+        story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#0f3460")))
+        story.append(Spacer(1, 0.3 * cm))
+        for line in body.narrative.splitlines():
+            story.append(Paragraph(line or "&nbsp;", body_style))
+        story.append(PageBreak())
+
+    # --- Disclosures page ---
+    story.append(Paragraph("Disclosures", heading_style))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.grey))
+    story.append(Spacer(1, 0.3 * cm))
+    disclosures = (
+        "This report was generated automatically by Quant Console. "
+        "The information contained herein is derived from automated analysis and "
+        "should not be construed as financial or investment advice. "
+        "All data sources are attributed within each artifact section. "
+        "Past performance is not indicative of future results. "
+        "Recipients should conduct their own due diligence before acting on any "
+        "information presented in this report. "
+        "Quant Console and its operators make no representations or warranties "
+        "regarding the accuracy or completeness of the data presented."
+    )
+    story.append(Paragraph(disclosures, body_style))
+
+    doc.build(story)
+    buf.seek(0)
+
+    filename = f"quant_console_{session_id[:8]}_{datetime.now(UTC).strftime('%Y%m%d')}.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 if __name__ == "__main__":
