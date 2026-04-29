@@ -84,9 +84,10 @@ def test_resolve_claude_path_raises_if_not_found(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_restart_if_needed_replaces_dead_process(
+async def test_restart_if_needed_clears_crashed_flag(
     mock_claude_cmd: list[str], fixtures_dir: Path, tmp_path: Path
 ):
+    """In the per-message-subprocess model, restart_if_needed just clears the crash marker."""
     broker = EventBroker()
     fixture = fixtures_dir / "stream_json" / "simple.jsonl"
     service = ClaudeCodeService(
@@ -96,14 +97,41 @@ async def test_restart_if_needed_replaces_dead_process(
         claude_cmd=mock_claude_cmd,
         env_overrides={"MOCK_CLAUDE_FIXTURE": str(fixture)},
     )
-    sub = await broker.subscribe("s1")
-    await service.send_message("first")
-    async for buf in sub:
-        if isinstance(buf.event, DoneEvent):
-            break
 
     service._mark_crashed_for_test()
     assert service.is_alive() is False
 
     await service.restart_if_needed()
     assert service.is_alive() is True
+
+
+@pytest.mark.asyncio
+async def test_synthetic_done_when_cli_emits_none(
+    mock_claude_cmd: list[str], tmp_path: Path
+):
+    """When the CLI exits without emitting a `done` event, the service publishes a synthetic one."""
+    # Create a fixture with NO done event
+    nodone = tmp_path / "no_done.jsonl"
+    nodone.write_text(
+        '{"type":"message.delta","message_id":"m1","append_text":"hi"}\n'
+        '{"type":"message.done","message_id":"m1"}\n',
+        encoding="utf-8",
+    )
+
+    broker = EventBroker()
+    service = ClaudeCodeService(
+        workspace_path=tmp_path,
+        session_id="s1",
+        broker=broker,
+        claude_cmd=mock_claude_cmd,
+        env_overrides={"MOCK_CLAUDE_FIXTURE": str(nodone)},
+    )
+
+    sub = await broker.subscribe("s1")
+    await service.send_message("hi")
+
+    received = []
+    async for buf in sub:
+        received.append(buf.event)
+
+    assert any(isinstance(e, DoneEvent) for e in received), "synthetic Done should be emitted"

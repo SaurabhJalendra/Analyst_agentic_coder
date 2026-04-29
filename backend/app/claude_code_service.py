@@ -1,13 +1,15 @@
 """Per-session Claude Code CLI subprocess wrapper.
 
-Spawns `claude --output-format stream-json` once per session, parses output
-line-by-line, publishes typed events to the EventBroker.
+Each send_message() spawns a fresh `claude -p <prompt> --output-format stream-json
+--dangerously-skip-permissions` subprocess and streams its output through the
+StreamParser to the EventBroker. After the subprocess exits, a synthetic
+DoneEvent is published so SSE subscribers close cleanly even if the CLI didn't
+emit one itself.
 
-Design choices:
-- Path resolution via shutil.which (the old hardcoded Windows path is gone).
-- Subprocess lifetime spans many user prompts; we write prompts to stdin.
-- A background reader task owns the subprocess's stdout for the entire lifetime.
-- restart_if_needed() reaps a dead subprocess and respawns.
+Design rationale:
+- `claude -p` is one-shot print mode; it does NOT read further prompts from stdin.
+- Per-message subprocess matches the actual CLI lifecycle.
+- restart_if_needed() becomes a no-op contract (each send spawns fresh).
 """
 from __future__ import annotations
 
@@ -20,14 +22,14 @@ from pathlib import Path
 import structlog
 
 from app.event_broker import EventBroker
-from app.event_schema import ErrorEvent
+from app.event_schema import DoneEvent, ErrorEvent
 from app.stream_parser import StreamParser
 
 _log = structlog.get_logger(__name__)
 
 
 def resolve_claude_path() -> str:
-    """Find the claude CLI on PATH. Replaces the old hardcoded path."""
+    """Find the claude CLI on PATH."""
     path = shutil.which("claude")
     if path is None:
         raise FileNotFoundError(
@@ -38,6 +40,8 @@ def resolve_claude_path() -> str:
 
 
 class ClaudeCodeService:
+    """Per-session service. Spawns a fresh subprocess for each send_message call."""
+
     def __init__(
         self,
         *,
@@ -54,37 +58,28 @@ class ClaudeCodeService:
         self._claude_cmd = claude_cmd or [resolve_claude_path()]
         self._env_overrides = env_overrides or {}
         self._timeout_seconds = timeout_seconds
-        self._proc: asyncio.subprocess.Process | None = None
         self._crashed_flag = False  # test hook
-        self._reader_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
 
     def is_alive(self) -> bool:
-        if self._crashed_flag:
-            return False
-        return self._proc is not None and self._proc.returncode is None
+        return not self._crashed_flag
 
     def _mark_crashed_for_test(self) -> None:
         self._crashed_flag = True
 
     async def restart_if_needed(self) -> None:
+        """No-op in the per-message-subprocess model. Clears crash flag for compat."""
         async with self._lock:
-            if self.is_alive():
-                return
-            await self._cleanup()
-            await self._spawn()
+            self._crashed_flag = False
 
     async def send_message(self, prompt: str) -> None:
+        """Spawn a fresh subprocess for this prompt; stream events to the broker."""
         async with self._lock:
-            if not self.is_alive():
-                await self._cleanup()
-                await self._spawn()
-            assert self._proc is not None
-            assert self._proc.stdin is not None
-            self._proc.stdin.write(prompt.encode("utf-8") + b"\n")
-            await self._proc.stdin.drain()
             try:
-                await asyncio.wait_for(self._wait_until_done(), timeout=self._timeout_seconds)
+                await asyncio.wait_for(
+                    self._run_one(prompt),
+                    timeout=self._timeout_seconds,
+                )
             except TimeoutError:
                 await self._broker.publish(
                     self._session_id,
@@ -95,37 +90,38 @@ class ClaudeCodeService:
                         recoverable=True,
                     ),
                 )
+                # Still emit a synthetic Done so subscribers close.
+                await self._publish_synthetic_done()
 
-    async def _spawn(self) -> None:
+    async def _run_one(self, prompt: str) -> None:
         env = {**os.environ, **self._env_overrides}
         cmd = [
             *self._claude_cmd,
-            "-p", "",  # we feed prompts via stdin
+            "-p", prompt,
             "--output-format", "stream-json",
             "--dangerously-skip-permissions",
         ]
-        _log.info("claude_code_service.spawn", cmd=cmd, cwd=str(self._workspace_path))
-        self._proc = await asyncio.create_subprocess_exec(
+        _log.info(
+            "claude_code_service.spawn",
+            cmd=cmd[:3] + ["<prompt>"] + cmd[4:],  # don't log the user's prompt
+            cwd=str(self._workspace_path),
+        )
+        proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(self._workspace_path),
-            stdin=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        self._crashed_flag = False
-        self._reader_task = asyncio.create_task(self._read_stdout())
 
-    async def _read_stdout(self) -> None:
-        assert self._proc is not None
-        assert self._proc.stdout is not None
         parser = StreamParser()
+        emitted_done = False
 
         async def lines() -> AsyncIterable[str]:
-            assert self._proc is not None
-            assert self._proc.stdout is not None
+            assert proc.stdout is not None
             while True:
-                raw = await self._proc.stdout.readline()
+                raw = await proc.stdout.readline()
                 if not raw:
                     return
                 yield raw.decode("utf-8", errors="replace").rstrip("\n")
@@ -133,6 +129,8 @@ class ClaudeCodeService:
         try:
             async for ev in parser.parse_lines(lines()):
                 await self._broker.publish(self._session_id, ev)
+                if isinstance(ev, DoneEvent):
+                    emitted_done = True
         except Exception as exc:  # pragma: no cover - defensive
             _log.exception("claude_code_service.reader_crash", error=str(exc))
             await self._broker.publish(
@@ -140,20 +138,30 @@ class ClaudeCodeService:
                 ErrorEvent(type="error", code="CLI_CRASH", message=str(exc), recoverable=True),
             )
 
-    async def _wait_until_done(self) -> None:
-        assert self._reader_task is not None
-        await self._reader_task
+        await proc.wait()
 
-    async def _cleanup(self) -> None:
-        if self._proc and self._proc.returncode is None:
-            self._proc.terminate()
-            try:
-                await asyncio.wait_for(self._proc.wait(), timeout=2.0)
-            except TimeoutError:
-                self._proc.kill()
-                await self._proc.wait()
-        if self._reader_task and not self._reader_task.done():
-            self._reader_task.cancel()
-        self._proc = None
-        self._reader_task = None
-        self._crashed_flag = False
+        if proc.returncode != 0 and parser.stats.parsed == 0:
+            stderr = b""
+            if proc.stderr is not None:
+                stderr = await proc.stderr.read()
+            await self._broker.publish(
+                self._session_id,
+                ErrorEvent(
+                    type="error",
+                    code="CLI_NONZERO_EXIT",
+                    message=(
+                        stderr.decode("utf-8", errors="replace")[:500]
+                        or f"exit {proc.returncode}"
+                    ),
+                    recoverable=True,
+                ),
+            )
+
+        if not emitted_done:
+            await self._publish_synthetic_done()
+
+    async def _publish_synthetic_done(self) -> None:
+        await self._broker.publish(
+            self._session_id,
+            DoneEvent(type="done", session_id=self._session_id),
+        )
