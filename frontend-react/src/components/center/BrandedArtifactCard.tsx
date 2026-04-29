@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import type { Artifact } from '../../types/domain';
 import type { ReactNode } from 'react';
+import { MethodologyPanel } from './MethodologyPanel';
 
 export interface BrandedArtifactCardProps {
   artifact: Artifact;
@@ -7,6 +9,7 @@ export interface BrandedArtifactCardProps {
 }
 
 export function BrandedArtifactCard({ artifact, body }: BrandedArtifactCardProps) {
+  const [showMethodology, setShowMethodology] = useState(false);
   return (
     <div className="border border-slate-200 rounded-lg my-3 overflow-hidden">
       <div className="bg-gradient-to-b from-brand-900 to-brand-800 text-white px-3 py-2 flex justify-between text-[10px]">
@@ -16,8 +19,14 @@ export function BrandedArtifactCard({ artifact, body }: BrandedArtifactCardProps
       <div className="p-3">{body}</div>
       <div className="text-[9px] text-slate-400 px-3 py-1.5 bg-slate-50 border-t border-slate-200 flex justify-between">
         <span>Source: {artifact.sourceAttribution}</span>
-        <span className="text-sky-700 cursor-pointer">▸ How this was made</span>
+        <span
+          onClick={() => setShowMethodology((v) => !v)}
+          className="text-sky-700 cursor-pointer hover:text-sky-900"
+        >
+          {showMethodology ? '▾ Hide methodology' : '▸ How this was made'}
+        </span>
       </div>
+      {showMethodology && <MethodologyPanel artifactId={artifact.id} />}
     </div>
   );
 }

@@ -1,8 +1,11 @@
 // frontend-react/src/components/prompt/PromptInput.tsx
 import { useState, useRef, useEffect } from 'react';
+import axios from 'axios';
 import { useSessionStore } from '../../store/sessionStore';
 import { postChat, eventStreamUrl } from '../../services/api';
 import { openEventStream } from '../../services/eventStream';
+
+const BASE = import.meta.env.VITE_API_URL || '';
 
 export function PromptInput() {
   const [text, setText] = useState('');
@@ -19,6 +22,21 @@ export function PromptInput() {
       ta.current.style.height = `${Math.min(ta.current.scrollHeight, 200)}px`;
     }
   }, [text]);
+
+  const exportPdf = async () => {
+    if (!sessionId) return;
+    try {
+      const r = await axios.post(`${BASE}/api/export/pdf`, { session_id: sessionId, artifact_ids: [], narrative: '' }, { responseType: 'blob' });
+      const url = URL.createObjectURL(r.data as Blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `quant-console-${sessionId}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('PDF export failed', err);
+    }
+  };
 
   const submit = async () => {
     const msg = text.trim();
@@ -73,7 +91,14 @@ export function PromptInput() {
       >
         {isStreaming ? 'Streaming…' : 'Send'}
       </button>
-      <span className="text-[10px] text-slate-400 px-2 py-1 border border-slate-200 rounded">Export PDF</span>
+      <button
+        onClick={exportPdf}
+        disabled={!sessionId}
+        className="text-[10px] text-slate-600 px-2 py-1 border border-slate-200 rounded hover:bg-slate-50 disabled:text-slate-300 disabled:cursor-not-allowed"
+        title={sessionId ? 'Export branded PDF of this session' : 'Send a message first'}
+      >
+        Export PDF
+      </button>
     </div>
   );
 }

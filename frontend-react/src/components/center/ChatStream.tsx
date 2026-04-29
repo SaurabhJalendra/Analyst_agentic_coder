@@ -5,6 +5,7 @@ import { BrandedArtifactCard } from './BrandedArtifactCard';
 import { SubAgentIndicator } from './SubAgentIndicator';
 import { PlanRail } from './PlanRail';
 import { MarkdownWithLatex } from '../renderers/MarkdownWithLatex';
+import { Chart, DEMO_EQUITY_CURVE } from '../renderers/Chart';
 
 export function ChatStream() {
   const chat = useSessionStore((s) => s.session.chat);
@@ -27,7 +28,13 @@ export function ChatStream() {
               <BrandedArtifactCard
                 key={turn.id}
                 artifact={turn.artifact}
-                body={<div className="text-[10px] text-slate-500 italic">Artifact rendering coming in Phase 3.</div>}
+                body={
+                  turn.artifact.kind === 'chart' ? (
+                    <Chart data={DEMO_EQUITY_CURVE} title={turn.artifact.title} height={200} />
+                  ) : (
+                    <div className="text-[10px] text-slate-500 italic">{turn.artifact.kind} rendering coming soon.</div>
+                  )
+                }
               />
             );
           case 'subagent':
