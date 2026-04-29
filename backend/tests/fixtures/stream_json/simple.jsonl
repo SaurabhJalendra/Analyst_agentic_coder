@@ -1,0 +1,4 @@
+{"type":"message.delta","message_id":"m1","append_text":"Hello"}
+{"type":"message.delta","message_id":"m1","append_text":", world."}
+{"type":"message.done","message_id":"m1"}
+{"type":"done","session_id":"test-session"}
