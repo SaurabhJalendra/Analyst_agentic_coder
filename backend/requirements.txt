@@ -5,9 +5,6 @@ python-multipart
 pydantic>=2.0.0
 pydantic-settings
 
-# Claude API
-anthropic
-
 # Database
 sqlalchemy>=2.0.0
 aiosqlite
@@ -22,3 +19,10 @@ httpx
 
 # Logging
 structlog
+
+# Development and testing
+sse-starlette>=2.0.0
+hypothesis>=6.100.0
+pytest-asyncio>=0.23.0
+mypy>=1.10.0
+ruff>=0.4.0
