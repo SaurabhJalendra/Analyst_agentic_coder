@@ -7,21 +7,36 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/"
   },
   "dependencies": {
-    "@types/react-syntax-highlighter": "^15.5.13",
+    "@tanstack/react-table": "^8.20.0",
     "axios": "^1.13.2",
+    "highlight.js": "^11.10.0",
+    "immer": "^10.1.0",
+    "katex": "^0.16.11",
     "lucide-react": "^0.555.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-markdown": "^10.1.0",
-    "react-syntax-highlighter": "^16.1.0",
-    "remark-gfm": "^4.0.1"
+    "react-markdown": "^9.0.1",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "zod": "^3.23.8",
+    "zustand": "^5.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@storybook/addon-essentials": "^8.6.0",
+    "@storybook/react-vite": "^8.6.0",
     "@tailwindcss/postcss": "^4.1.17",
+    "@testing-library/jest-dom": "^6.4.0",
+    "@testing-library/react": "^16.0.0",
+    "@testing-library/user-event": "^14.5.0",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
@@ -31,10 +46,13 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "jsdom": "^25.0.0",
     "postcss": "^8.5.6",
+    "prettier": "^3.3.0",
     "tailwindcss": "^4.1.17",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
-    "vite": "^7.2.4"
+    "vite": "^7.2.4",
+    "vitest": "^2.1.0"
   }
 }
