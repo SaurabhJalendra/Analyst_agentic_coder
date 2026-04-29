@@ -21,9 +21,10 @@ from pathlib import Path
 
 import structlog
 
+from app.cli_translator import CLITranslator
 from app.event_broker import EventBroker
 from app.event_schema import DoneEvent, ErrorEvent
-from app.stream_parser import StreamParser
+from app.stream_parser import StreamParser  # noqa: F401  (kept for tests/legacy)
 
 _log = structlog.get_logger(__name__)
 
@@ -116,22 +117,22 @@ class ClaudeCodeService:
             env=env,
         )
 
-        parser = StreamParser()
+        translator = CLITranslator(self._session_id)
         emitted_done = False
+        events_translated = 0
 
-        async def lines() -> AsyncIterable[str]:
+        try:
             assert proc.stdout is not None
             while True:
                 raw = await proc.stdout.readline()
                 if not raw:
-                    return
-                yield raw.decode("utf-8", errors="replace").rstrip("\n")
-
-        try:
-            async for ev in parser.parse_lines(lines()):
-                await self._broker.publish(self._session_id, ev)
-                if isinstance(ev, DoneEvent):
-                    emitted_done = True
+                    break
+                line = raw.decode("utf-8", errors="replace").rstrip("\n")
+                for ev in translator.translate(line):
+                    events_translated += 1
+                    await self._broker.publish(self._session_id, ev)
+                    if isinstance(ev, DoneEvent):
+                        emitted_done = True
         except Exception as exc:  # pragma: no cover - defensive
             _log.exception("claude_code_service.reader_crash", error=str(exc))
             await self._broker.publish(
@@ -141,7 +142,7 @@ class ClaudeCodeService:
 
         await proc.wait()
 
-        if proc.returncode != 0 and parser.stats.parsed == 0:
+        if proc.returncode != 0 and events_translated == 0:
             stderr = b""
             if proc.stderr is not None:
                 stderr = await proc.stderr.read()

@@ -732,22 +732,24 @@ async def list_workspace_directory(session_id: str, directory_path: str = "", db
         if not full_path.is_dir():
             raise HTTPException(status_code=400, detail="Path is not a directory")
 
-        # List files
+        # List files (use resolved workspace for relative_to since iterdir returns
+        # paths under the resolved full_path)
         files = []
         for item in full_path.iterdir():
-            rel_path = item.relative_to(workspace_path)
+            rel_path = item.relative_to(workspace_resolved)
             files.append({
                 "name": item.name,
-                "path": str(rel_path),
+                "path": str(rel_path).replace("\\", "/"),
                 "is_dir": item.is_dir(),
                 "size": item.stat().st_size if item.is_file() else None,
-                "download_url": f"/api/workspace/{session_id}/files/{rel_path}" if item.is_file() else None
+                "download_url": f"/api/workspace/{session_id}/files/{str(rel_path).replace(chr(92), '/')}" if item.is_file() else None
             })
 
         return {
             "session_id": session_id,
             "directory": directory_path or ".",
-            "files": sorted(files, key=lambda x: (not x["is_dir"], x["name"]))
+            "items": sorted(files, key=lambda x: (not x["is_dir"], x["name"])),
+            "files": sorted(files, key=lambda x: (not x["is_dir"], x["name"])),  # kept for frontend compat
         }
 
     except HTTPException:
