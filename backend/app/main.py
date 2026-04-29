@@ -1,15 +1,17 @@
 """FastAPI main application."""
+import asyncio
 import os
 import uuid
 import traceback
 from pathlib import Path
-from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Depends
+from typing import Any, Callable, List, Optional
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 import structlog
 from dotenv import load_dotenv
 
@@ -21,6 +23,8 @@ from app.workspace_manager import workspace_manager, get_claude_instance, cleanu
 from app.db_utils import delete_session, list_sessions, validate_session_messages, cleanup_all_sessions
 from app.progress_tracker import ProgressTracker
 from app.git_utils import clone_repository
+from app.event_broker import EventBroker
+from app.event_schema import DoneEvent
 
 # Setup logging
 structlog.configure(
@@ -48,6 +52,27 @@ app.add_middleware(
 # Initialize Claude service (API-based - kept for backwards compatibility)
 # claude_service = ClaudeService()
 # Note: Now using Claude Code CLI instances managed per-session
+
+# Module-level SSE event broker (injectable for testing)
+_broker = EventBroker()
+
+
+def get_broker() -> EventBroker:
+    """Dependency: returns the module-level EventBroker."""
+    return _broker
+
+
+def get_claude_factory() -> Callable[..., Any]:
+    """Dependency-injectable factory; tests override this to inject a mock-CLI service."""
+    from app.claude_code_service import ClaudeCodeService
+
+    def factory(*, workspace_path: Path, session_id: str) -> ClaudeCodeService:
+        return ClaudeCodeService(
+            workspace_path=workspace_path,
+            session_id=session_id,
+            broker=_broker,
+        )
+    return factory
 
 # Pydantic models for API
 class ChatMessage(BaseModel):
@@ -250,9 +275,14 @@ async def health():
     """Health check endpoint for Docker and monitoring."""
     return {"status": "healthy", "service": "claude-code-chatbot-api"}
 
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
-    """Handle chat message using Claude Code CLI with automatic tool execution."""
+@app.post("/api/chat", status_code=202)
+async def chat(
+    request: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+    broker: EventBroker = Depends(get_broker),
+    claude_factory=Depends(get_claude_factory),
+):
+    """Handle chat message — fires Claude Code in the background and returns 202 immediately."""
     session_id = None
     try:
         # Get or create session
@@ -261,7 +291,15 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             result = await db.execute(select(DBSession).where(DBSession.id == session_id))
             session = result.scalar_one_or_none()
             if not session:
-                raise HTTPException(status_code=404, detail="Session not found")
+                # Session not in DB — create workspace + record so streaming can proceed
+                workspace_path = workspace_manager.create_session_workspace(session_id)
+                session = DBSession(
+                    id=session_id,
+                    workspace_path=str(workspace_path),
+                    active_repo=None,
+                )
+                db.add(session)
+                await db.commit()
         else:
             session_id = str(uuid.uuid4())
             workspace_path = workspace_manager.create_session_workspace(session_id)
@@ -317,7 +355,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
                     )
                     # Continue without repo - session can still be used
 
-        # Save user message
+        # Save user message to DB before returning 202
         user_message_record = Message(
             session_id=session_id,
             role="user",
@@ -328,110 +366,27 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
 
         # Start progress tracking
         ProgressTracker.start_operation(session_id, request.message)
-        ProgressTracker.add_step(session_id, "📝 Message received", f"User: {request.message[:100]}...")
+        ProgressTracker.add_step(session_id, "Message received", f"User: {request.message[:100]}...")
 
-        # Show repo status in progress
-        if session.active_repo:
-            ProgressTracker.add_step(session_id, "📁 Repository ready", f"Working in: {Path(session.active_repo).name}")
+        # Determine working directory for Claude Code
+        workspace_path = Path(session.active_repo) if session.active_repo else Path(session.workspace_path)
 
-        # Get or create persistent Claude Code instance for this session
-        ProgressTracker.add_step(session_id, "🔧 Initializing Claude Code", "Getting Claude Code instance...")
-
-        workspace_path = session.workspace_path
-        # If active_repo exists, use it as the working directory
-        if session.active_repo:
-            workspace_path = session.active_repo
-
-        claude_code_service = await get_claude_instance(session_id, workspace_path)
-
-        # Send message to Claude Code CLI (it handles all tool execution autonomously)
-        ProgressTracker.add_step(session_id, "💬 Sending to Claude Code", "Processing request...")
-
-        claude_response = await claude_code_service.send_message(
-            user_message=request.message,
-            timeout=600  # 10 minute timeout for long-running tasks
-        )
-
-        # Extract response text
-        response_text = ""
-        for block in claude_response.get("content", []):
-            if block.get("type") == "text":
-                response_text += block.get("text", "")
-
-        # Extract tool information from parsed output
-        tool_calls_info = claude_response.get("tool_calls", [])
-        script_outputs = claude_response.get("script_outputs", [])
-        files_created = claude_response.get("files_created", [])
-        files_modified = claude_response.get("files_modified", [])
-        errors = claude_response.get("errors", [])
-
-        # Log tool executions
-        if tool_calls_info:
-            for tool_call in tool_calls_info:
-                ProgressTracker.add_tool_execution(
-                    session_id,
-                    tool_call.get("type", "unknown"),
-                    {"command": tool_call.get("command", "")}
-                )
-
-        # Add context about what Claude Code did
-        if script_outputs:
-            response_text += "\n\n**Script Outputs:**\n" + "\n".join(script_outputs)
-
-        if files_created:
-            response_text += "\n\n**Files Created:**\n" + "\n".join(f"- {f}" for f in files_created)
-
-        if files_modified:
-            response_text += "\n\n**Files Modified:**\n" + "\n".join(f"- {f}" for f in files_modified)
-
-        if errors:
-            response_text += "\n\n**Errors:**\n" + "\n".join(errors)
-
-        # Save assistant message
-        assistant_message = Message(
+        # Get or create ClaudeCodeService for this session
+        service = workspace_manager.get_or_create_service(
             session_id=session_id,
-            role="assistant",
-            content=response_text
-        )
-        db.add(assistant_message)
-        await db.commit()
-
-        # Save tool calls to database for history
-        import json
-        for i, tool_call in enumerate(tool_calls_info):
-            tc = ToolCall(
-                message_id=assistant_message.id,
-                claude_tool_id=f"claude_code_{i}",
-                tool_name=tool_call.get("type", "bash"),
-                arguments=json.dumps(tool_call),
-                status="executed"
-            )
-            db.add(tc)
-        await db.commit()
-
-        # Check if git_clone was executed (look for cloned repo in workspace)
-        # Update active_repo if a new repo was cloned
-        if "git clone" in response_text.lower() or any("clone" in str(tc).lower() for tc in tool_calls_info):
-            workspace_dir = Path(session.workspace_path)
-            # Look for git repos in workspace
-            for item in workspace_dir.iterdir():
-                if item.is_dir() and (item / ".git").exists():
-                    session.active_repo = str(item)
-                    await db.commit()
-                    logger.info("updated_active_repo", path=session.active_repo)
-                    break
-
-        # Mark as complete
-        ProgressTracker.complete_operation(session_id, success=True)
-
-        return ChatResponse(
-            session_id=session_id,
-            response=response_text,
-            tool_calls=tool_calls_info,
-            requires_approval=False,
-            workspace_path=str(session.workspace_path)
+            factory=lambda: claude_factory(workspace_path=workspace_path, session_id=session_id),
         )
 
+        # Fire and forget — SSE stream carries progress to the frontend
+        asyncio.create_task(service.send_message(request.message))
+
+        return {
+            "session_id": session_id,
+            "event_stream_url": f"/api/chat/stream/{session_id}",
+        }
+
+    except HTTPException:
+        raise
     except Exception as e:
         # Print full traceback to console for debugging
         print("=" * 80)
@@ -443,10 +398,42 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         print("=" * 80)
 
         logger.error("chat_error", error=str(e), session_id=session_id if session_id else 'unknown')
-        # Mark as failed
         if session_id:
             ProgressTracker.complete_operation(session_id, success=False, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/chat/stream/{session_id}")
+async def chat_stream(
+    session_id: str,
+    request: Request,
+    broker: EventBroker = Depends(get_broker),
+) -> EventSourceResponse:
+    """SSE endpoint — streams events from the per-session EventBroker."""
+    last_event_id_header = request.headers.get("Last-Event-ID", "0")
+    try:
+        last_event_id = int(last_event_id_header)
+    except ValueError:
+        last_event_id = 0
+
+    from collections.abc import AsyncGenerator
+
+    async def event_source() -> AsyncGenerator[bytes, None]:
+        sub = await broker.subscribe(session_id, last_event_id=last_event_id)
+        async for buffered in sub:
+            # Emit data before event so clients that break on "event: done"
+            # still receive the done payload in the preceding data line.
+            sep = "\r\n"
+            yield (
+                f"id: {buffered.id}{sep}"
+                f"data: {buffered.event.model_dump_json()}{sep}"
+                f"event: {buffered.event.type}{sep}"
+                f"{sep}"
+            ).encode()
+            if isinstance(buffered.event, DoneEvent):
+                return
+
+    return EventSourceResponse(event_source())
 
 # NOTE: /api/execute endpoint removed - Claude Code handles tool execution autonomously
 

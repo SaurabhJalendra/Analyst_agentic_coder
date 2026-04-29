@@ -248,6 +248,26 @@ class WorkspaceManager:
             logger.error("cleanup_old_workspaces_failed", error=str(e))
             return {"cleaned": 0, "failed": 0, "total_size_mb": 0, "error": str(e)}
 
+    def get_or_create_service(self, session_id: str, factory: Any) -> Any:
+        """Lookup or create a ClaudeCodeService for this session.
+
+        Args:
+            session_id: Session identifier
+            factory: Zero-argument callable that returns a new ClaudeCodeService
+
+        Returns:
+            Existing or newly-created ClaudeCodeService
+        """
+        if session_id in _active_claude_instances:
+            return _active_claude_instances[session_id]
+        svc = factory()
+        _active_claude_instances[session_id] = svc
+        return svc
+
+    def create_workspace(self, session_id: str) -> Path:
+        """Alias for create_session_workspace for use in new-style chat handler."""
+        return self.create_session_workspace(session_id)
+
     def get_workspace_stats(self) -> Dict[str, Any]:
         """Get statistics about all workspaces.
 
