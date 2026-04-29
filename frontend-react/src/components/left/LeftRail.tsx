@@ -1,13 +1,11 @@
 import { SessionsList } from './SessionsList';
 import { WorkspaceTree } from './WorkspaceTree';
-import { KnowledgePanel } from './KnowledgePanel';
 
 export function LeftRail() {
   return (
     <div className="flex flex-col gap-4 text-[11px]">
       <SessionsList />
       <WorkspaceTree />
-      <KnowledgePanel />
     </div>
   );
 }

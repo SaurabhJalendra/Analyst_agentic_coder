@@ -12,14 +12,14 @@ import { PromptInput } from './components/prompt/PromptInput';
 function App() {
   return (
     <ThreePaneLayout
-      topBar={<BrandBar userIdentity="acme.capital@client" userTier="Tier 1" rmName="David Chen" />}
-      complianceBar={<ComplianceBar entitlements="US Equity LIVE · EU 15m" mnpiOn lastRefresh={new Date().toISOString().slice(11, 16) + ' GMT'} />}
+      topBar={<BrandBar />}
+      complianceBar={<ComplianceBar lastRefresh={new Date().toISOString().slice(11, 16) + ' GMT'} />}
       statusBar={<StatusBar />}
       left={<LeftRail />}
       center={<ChatStream />}
       right={<RightRail />}
       prompt={<PromptInput />}
-      footer={<ComplianceFooter rmName="David Chen" />}
+      footer={<ComplianceFooter />}
     />
   );
 }

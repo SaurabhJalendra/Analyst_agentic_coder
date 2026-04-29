@@ -5,7 +5,8 @@ import { BrandedArtifactCard } from './BrandedArtifactCard';
 import { SubAgentIndicator } from './SubAgentIndicator';
 import { PlanRail } from './PlanRail';
 import { MarkdownWithLatex } from '../renderers/MarkdownWithLatex';
-import { Chart, DEMO_EQUITY_CURVE } from '../renderers/Chart';
+// Chart import removed — backend doesn't yet emit chart series payloads in artifact events.
+// When that's wired through, restore: `import { Chart } from '../renderers/Chart';`
 
 export function ChatStream() {
   const chat = useSessionStore((s) => s.session.chat);
@@ -29,11 +30,11 @@ export function ChatStream() {
                 key={turn.id}
                 artifact={turn.artifact}
                 body={
-                  turn.artifact.kind === 'chart' ? (
-                    <Chart data={DEMO_EQUITY_CURVE} title={turn.artifact.title} height={200} />
-                  ) : (
-                    <div className="text-[10px] text-slate-500 italic">{turn.artifact.kind} rendering coming soon.</div>
-                  )
+                  <div className="text-[10px] text-slate-500 italic">
+                    {turn.artifact.kind === 'chart'
+                      ? 'Chart payload not yet emitted by backend (deferred).'
+                      : `${turn.artifact.kind} rendering deferred.`}
+                  </div>
                 }
               />
             );
