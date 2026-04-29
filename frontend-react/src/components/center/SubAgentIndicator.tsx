@@ -9,7 +9,7 @@ const palette = {
 } as const;
 
 function colorsFor(kind: string) {
-  return (palette as Record<string, typeof palette.general>)[kind] ?? palette.general;
+  return (palette as unknown as Record<string, typeof palette.general>)[kind] ?? palette.general;
 }
 
 export function SubAgentIndicator({ msg }: { msg: SubAgentMessage }) {

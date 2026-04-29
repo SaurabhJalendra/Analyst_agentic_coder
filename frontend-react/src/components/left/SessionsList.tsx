@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { listSessions, deleteSession } from '../../services/api';
+import { listSessions } from '../../services/api';
 import { useSessionStore } from '../../store/sessionStore';
 import { Label } from './LeftRail';
 
