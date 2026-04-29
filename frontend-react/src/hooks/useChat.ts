@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Message, Session, ProgressData } from '../types';
+import type { Message, Session, ProgressData } from '../types';
 import { sendMessage, getSessions, deleteSession, getSessionHistory, getProgress } from '../services/api';
 
 interface UseChatReturn {

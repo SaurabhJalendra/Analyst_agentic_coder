@@ -1,5 +1,5 @@
 import { Loader2, CheckCircle, AlertCircle, ChevronDown } from 'lucide-react';
-import { ProgressData } from '../types';
+import type { ProgressData } from '../types';
 import { useState } from 'react';
 
 interface ProgressIndicatorProps {

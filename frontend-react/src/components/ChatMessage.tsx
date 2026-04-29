@@ -1,9 +1,7 @@
 import { User, Bot, ChevronDown, Download, FileText, Image, Database, Code } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Message } from '../types';
+import type { Message } from '../types';
 import { extractFilePaths, getFileDownloadUrl } from '../services/api';
 import { useState } from 'react';
 
@@ -89,14 +87,11 @@ export function ChatMessage({ message, sessionId }: ChatMessageProps) {
                   }
 
                   return (
-                    <SyntaxHighlighter
-                      style={vscDarkPlus}
-                      language={match[1]}
-                      PreTag="div"
-                      className="rounded-lg !my-4 !bg-dark-900"
-                    >
-                      {String(children).replace(/\n$/, '')}
-                    </SyntaxHighlighter>
+                    <pre className="bg-dark-900 rounded-lg p-4 overflow-x-auto my-4">
+                      <code className={`text-sm font-mono text-slate-300 ${className || ''}`} {...props}>
+                        {children}
+                      </code>
+                    </pre>
                   );
                 },
                 a({ href, children }) {
