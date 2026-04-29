@@ -23,6 +23,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("-p", dest="prompt", default="")
     parser.add_argument("--output-format", default="stream-json")
+    parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--dangerously-skip-permissions", action="store_true")
     parser.add_argument("--fixture", default=None, help="Path to fixture .jsonl")
     args = parser.parse_args()

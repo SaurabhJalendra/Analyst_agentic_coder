@@ -135,3 +135,48 @@ async def test_synthetic_done_when_cli_emits_none(
         received.append(buf.event)
 
     assert any(isinstance(e, DoneEvent) for e in received), "synthetic Done should be emitted"
+
+
+@pytest.mark.asyncio
+async def test_cli_invocation_includes_verbose_flag(
+    mock_claude_cmd: list[str], fixtures_dir: Path, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Regression: claude --print --output-format stream-json REQUIRES --verbose.
+    Smoke test on 2026-04-29 caught the missing flag (CLI rejects with
+    'When using --print, --output-format=stream-json requires --verbose').
+    """
+    import asyncio as _asyncio
+
+    captured_cmd: list[list[str]] = []
+    real_create = _asyncio.create_subprocess_exec
+
+    async def capturing_create(*args: str, **kwargs: object):
+        captured_cmd.append(list(args))
+        return await real_create(*args, **kwargs)
+
+    monkeypatch.setattr(_asyncio, "create_subprocess_exec", capturing_create)
+
+    broker = EventBroker()
+    fixture = fixtures_dir / "stream_json" / "simple.jsonl"
+    service = ClaudeCodeService(
+        workspace_path=tmp_path,
+        session_id="s1",
+        broker=broker,
+        claude_cmd=mock_claude_cmd,
+        env_overrides={"MOCK_CLAUDE_FIXTURE": str(fixture)},
+    )
+
+    sub = await broker.subscribe("s1")
+    await service.send_message("test")
+    async for buf in sub:
+        if isinstance(buf.event, DoneEvent):
+            break
+
+    assert captured_cmd, "subprocess was never spawned"
+    cmd = captured_cmd[0]
+    assert "--verbose" in cmd, f"--verbose flag missing from cmd: {cmd}"
+    # And the order matters: --verbose must accompany --output-format stream-json
+    of_idx = cmd.index("--output-format")
+    assert cmd[of_idx + 1] == "stream-json"
+    assert "--verbose" in cmd[of_idx:], "--verbose must come after --output-format"

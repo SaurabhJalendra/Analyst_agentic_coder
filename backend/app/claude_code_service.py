@@ -99,6 +99,7 @@ class ClaudeCodeService:
             *self._claude_cmd,
             "-p", prompt,
             "--output-format", "stream-json",
+            "--verbose",
             "--dangerously-skip-permissions",
         ]
         _log.info(
