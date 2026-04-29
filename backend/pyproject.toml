@@ -7,7 +7,7 @@ select = ["E", "F", "I", "N", "UP", "B", "ASYNC", "S", "C4", "RET", "SIM", "PL"]
 ignore = ["S101", "PLR0913"]  # allow assert in tests; allow >5 args (FastAPI deps)
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S105", "S106"]  # allow hardcoded test secrets
+"tests/**/*.py" = ["S105", "S106", "PLR2004"]  # allow hardcoded test secrets; allow magic numbers in assertions
 
 [tool.mypy]
 python_version = "3.12"
