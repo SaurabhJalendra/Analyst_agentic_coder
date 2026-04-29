@@ -40,13 +40,15 @@ logger = structlog.get_logger()
 # Initialize FastAPI app
 app = FastAPI(title="Claude Code Chatbot API")
 
-# CORS middleware
+# CORS middleware — explicit allowlist (was "*"; tightened for security)
+_cors_origins_env = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000")
+_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Last-Event-ID"],
 )
 
 # Initialize Claude service (API-based - kept for backwards compatibility)
@@ -532,36 +534,9 @@ async def clone_repository_endpoint(request: CloneRequest, db: AsyncSession = De
         logger.error("clone_error", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/files/{path:path}")
-async def read_file(path: str):
-    """Read a file from the filesystem.
-
-    Note: For workspace files, prefer using /api/workspace/{session_id}/files/{path}
-    which includes security checks.
-    """
-    try:
-        file_path = Path(path)
-
-        if not file_path.exists():
-            raise HTTPException(status_code=404, detail="File not found")
-
-        if not file_path.is_file():
-            raise HTTPException(status_code=400, detail="Path is not a file")
-
-        # Read file content
-        content = file_path.read_text(encoding='utf-8', errors='replace')
-
-        return {
-            "path": str(file_path),
-            "content": content,
-            "size": file_path.stat().st_size
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("read_file_error", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+# NOTE: /api/files/{path:path} was REMOVED — it was an unguarded path-traversal
+# hole that read any file the backend process could access. Use the
+# workspace-scoped /api/workspace/{session_id}/files/{path:path} instead.
 
 @app.get("/api/sessions")
 async def get_sessions(db: AsyncSession = Depends(get_db)):
