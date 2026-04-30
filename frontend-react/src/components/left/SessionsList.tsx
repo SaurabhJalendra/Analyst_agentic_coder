@@ -21,7 +21,7 @@ function formatSessionLabel(s: ApiSession): string {
 export function SessionsList() {
   const [sessions, setSessions] = useState<ApiSession[]>([]);
   const currentId = useSessionStore((s) => s.sessionId);
-  const setSessionId = useSessionStore((s) => s.setSessionId);
+  const switchSession = useSessionStore((s) => s.switchSession);
   const reset = useSessionStore((s) => s.reset);
 
   const refresh = async () => {
@@ -57,7 +57,7 @@ export function SessionsList() {
           return (
             <div
               key={s.id}
-              onClick={() => setSessionId(s.id)}
+              onClick={() => switchSession(s.id)}
               title={s.id}
               className={`px-1.5 py-0.5 rounded cursor-pointer flex items-baseline gap-2 ${active ? 'bg-indigo-50 text-brand-900 font-semibold' : 'text-slate-600 hover:bg-slate-100'}`}
             >

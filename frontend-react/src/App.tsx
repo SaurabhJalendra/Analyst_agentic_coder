@@ -8,8 +8,12 @@ import { LeftRail } from './components/left/LeftRail';
 import { ChatStream } from './components/center/ChatStream';
 import { RightRail } from './components/right/RightRail';
 import { PromptInput } from './components/prompt/PromptInput';
+import { useSessionHistory } from './hooks/useSessionHistory';
 
 function App() {
+  // Reload chat history whenever the active session changes (cancellable).
+  useSessionHistory();
+
   return (
     <ThreePaneLayout
       topBar={<BrandBar />}
