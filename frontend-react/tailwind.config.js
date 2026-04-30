@@ -50,12 +50,22 @@ export default {
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
         'typing': 'typing 1s steps(3) infinite',
+        'slide-left': 'slideInLeft 180ms ease-out',
+        'slide-right': 'slideInRight 180ms ease-out',
       },
       keyframes: {
         typing: {
           '0%, 100%': { opacity: '1' },
           '50%': { opacity: '0' },
-        }
+        },
+        slideInLeft: {
+          'from': { transform: 'translateX(-100%)' },
+          'to':   { transform: 'translateX(0)' },
+        },
+        slideInRight: {
+          'from': { transform: 'translateX(100%)' },
+          'to':   { transform: 'translateX(0)' },
+        },
       }
     },
   },

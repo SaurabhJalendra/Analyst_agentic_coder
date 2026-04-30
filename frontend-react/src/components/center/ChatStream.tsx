@@ -1,12 +1,24 @@
+import { lazy, Suspense } from 'react';
 import { useSessionStore } from '../../store/sessionStore';
 import { UserMessage } from './UserMessage';
 import { ThinkingBlock } from './ThinkingBlock';
 import { BrandedArtifactCard } from './BrandedArtifactCard';
 import { SubAgentIndicator } from './SubAgentIndicator';
 import { PlanRail } from './PlanRail';
-import { MarkdownWithLatex } from '../renderers/MarkdownWithLatex';
-// Chart import removed — backend doesn't yet emit chart series payloads in artifact events.
-// When that's wired through, restore: `import { Chart } from '../renderers/Chart';`
+
+// Lazy-load the markdown+LaTeX renderer. It pulls in react-markdown +
+// remark-math + rehype-katex + the KaTeX runtime (~150KB gzipped). The
+// fallback shows the raw text so the user sees the assistant response
+// immediately while the chunk loads.
+const MarkdownWithLatex = lazy(() => import('../renderers/MarkdownWithLatex'));
+
+function AssistantTurn({ text }: { text: string }) {
+  return (
+    <Suspense fallback={<div className="whitespace-pre-wrap">{text}</div>}>
+      <MarkdownWithLatex>{text}</MarkdownWithLatex>
+    </Suspense>
+  );
+}
 
 export function ChatStream() {
   const chat = useSessionStore((s) => s.session.chat);
@@ -19,7 +31,7 @@ export function ChatStream() {
           case 'assistant':
             return (
               <div key={turn.id} className="my-2 text-[12px]">
-                <MarkdownWithLatex>{turn.text}</MarkdownWithLatex>
+                <AssistantTurn text={turn.text} />
               </div>
             );
           case 'thinking':

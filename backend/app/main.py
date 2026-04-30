@@ -27,7 +27,6 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 from app.database import init_db, get_db, Session as DBSession, Message, ToolCall
 from app.workspace_manager import workspace_manager, get_claude_instance, cleanup_claude_instance, cleanup_all_claude_instances
 from app.db_utils import delete_session, list_sessions, validate_session_messages, cleanup_all_sessions
-from app.progress_tracker import ProgressTracker
 from app.git_utils import clone_repository
 from app.event_broker import EventBroker
 from app.event_schema import DoneEvent
@@ -408,10 +407,6 @@ async def chat(
         db.add(user_message_record)
         await db.commit()
 
-        # Start progress tracking
-        ProgressTracker.start_operation(session_id, chat_request.message)
-        ProgressTracker.add_step(session_id, "Message received", f"User: {chat_request.message[:100]}...")
-
         # Determine working directory for Claude Code
         workspace_path = Path(session.active_repo) if session.active_repo else Path(session.workspace_path)
 
@@ -442,8 +437,6 @@ async def chat(
         print("=" * 80)
 
         logger.error("chat_error", error=str(e), session_id=session_id if session_id else 'unknown')
-        if session_id:
-            ProgressTracker.complete_operation(session_id, success=False, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -636,17 +629,8 @@ async def cleanup_sessions(db: AsyncSession = Depends(get_db)):
         logger.error("cleanup_sessions_error", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/progress/{session_id}")
-async def get_progress(session_id: str):
-    """Get real-time progress for a session."""
-    try:
-        progress = ProgressTracker.get_progress(session_id)
-        if not progress:
-            return {"status": "not_found", "message": "No progress found for this session"}
-        return progress
-    except Exception as e:
-        logger.error("get_progress_error", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+# NOTE: /api/progress/{session_id} was REMOVED — replaced by SSE
+# /api/chat/stream/{session_id}. Progress is now streamed live as typed events.
 
 @app.get("/api/workspace/{session_id}/files/{file_path:path}")
 async def serve_workspace_file(session_id: str, file_path: str, db: AsyncSession = Depends(get_db)):

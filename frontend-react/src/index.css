@@ -1,5 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-@import 'katex/dist/katex.min.css';
+/* KaTeX CSS is imported by MarkdownWithLatex.tsx so it's deferred to the
+   first markdown render — saves ~30KB of CSS on initial page load. */
 
 @import 'tailwindcss';
 
