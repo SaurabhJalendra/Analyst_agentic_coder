@@ -89,8 +89,16 @@ class EventBroker:
             # async lock (safe: list.remove is thread-safe enough for single-
             # threaded asyncio; the lock guards concurrent publish/subscribe).
             _state = self._sessions.get(session_id)
-            if _state is not None and queue in _state.subscriber_queues:
-                _state.subscriber_queues.remove(queue)
+            if _state is not None:
+                if queue in _state.subscriber_queues:
+                    _state.subscriber_queues.remove(queue)
+                # Drop the session entry once it's done streaming and no one
+                # else is listening — otherwise _sessions accumulates forever
+                # (one per chat ever). The buffer for `Last-Event-ID` replay
+                # is intentionally lost: a reconnect after this point gets a
+                # fresh stream which is fine because `done` already fired.
+                if _state.closed and not _state.subscriber_queues:
+                    self._sessions.pop(session_id, None)
 
     def subscriber_count(self, session_id: str) -> int:
         state = self._sessions.get(session_id)

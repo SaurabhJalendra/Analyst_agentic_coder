@@ -23,6 +23,9 @@ structlog
 # PDF generation
 reportlab>=4.0.0
 
+# Rate limiting
+slowapi>=0.1.9
+
 # Development and testing
 sse-starlette>=2.0.0
 hypothesis>=6.100.0

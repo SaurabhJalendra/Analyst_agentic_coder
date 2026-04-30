@@ -15,6 +15,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 import structlog
 from dotenv import load_dotenv
 
@@ -42,6 +45,12 @@ logger = structlog.get_logger()
 
 # Initialize FastAPI app
 app = FastAPI(title="Claude Code Chatbot API")
+
+# Rate limiter — keyed on remote IP. Limits are conservative defaults; in
+# production, mount per-session-id keying once the auth layer lands.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS middleware — explicit allowlist (was "*"; tightened for security)
 _cors_origins_env = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000")
@@ -309,8 +318,10 @@ async def health():
     return {"status": "healthy", "service": "claude-code-chatbot-api"}
 
 @app.post("/api/chat", status_code=202)
+@limiter.limit("20/minute")
 async def chat(
-    request: ChatRequest,
+    request: Request,  # noqa: F811 — slowapi requires Request as first arg
+    chat_request: ChatRequest,
     db: AsyncSession = Depends(get_db),
     broker: EventBroker = Depends(get_broker),
     claude_factory=Depends(get_claude_factory),
@@ -319,8 +330,8 @@ async def chat(
     session_id = None
     try:
         # Get or create session
-        if request.session_id:
-            session_id = request.session_id
+        if chat_request.session_id:
+            session_id = chat_request.session_id
             result = await db.execute(select(DBSession).where(DBSession.id == session_id))
             session = result.scalar_one_or_none()
             if not session:
@@ -392,14 +403,14 @@ async def chat(
         user_message_record = Message(
             session_id=session_id,
             role="user",
-            content=request.message
+            content=chat_request.message
         )
         db.add(user_message_record)
         await db.commit()
 
         # Start progress tracking
-        ProgressTracker.start_operation(session_id, request.message)
-        ProgressTracker.add_step(session_id, "Message received", f"User: {request.message[:100]}...")
+        ProgressTracker.start_operation(session_id, chat_request.message)
+        ProgressTracker.add_step(session_id, "Message received", f"User: {chat_request.message[:100]}...")
 
         # Determine working directory for Claude Code
         workspace_path = Path(session.active_repo) if session.active_repo else Path(session.workspace_path)
@@ -411,7 +422,7 @@ async def chat(
         )
 
         # Fire and forget — SSE stream carries progress to the frontend
-        asyncio.create_task(service.send_message(request.message))
+        asyncio.create_task(service.send_message(chat_request.message))
 
         return {
             "session_id": session_id,

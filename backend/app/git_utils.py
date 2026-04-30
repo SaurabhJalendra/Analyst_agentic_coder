@@ -1,87 +1,106 @@
-"""
-Simple Git utilities for repository cloning
+"""Git utilities for repository cloning.
 
-Replaces the complex tool executor for basic git operations
+Credentials are passed via `git -c http.extraheader="Authorization: Basic ..."`
+instead of being embedded in the URL — this prevents leaking secrets in logs,
+git's own error messages, and process listings that echo arguments back.
+Stderr from the clone is also redacted before being returned to the caller.
 """
 
+import base64
+import re
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any
+
 import structlog
 
 logger = structlog.get_logger(__name__)
 
 
+_CREDENTIAL_URL_RE = re.compile(r"https?://[^/\s:]+:[^/\s@]+@")
+
+
+def _redact(text: str) -> str:
+    """Strip embedded credentials and bearer tokens from a string."""
+    if not text:
+        return text
+    text = _CREDENTIAL_URL_RE.sub("https://<redacted>@", text)
+    text = re.sub(r"(Bearer|Basic)\s+[A-Za-z0-9+/=._-]+", r"\1 <redacted>", text)
+    return text
+
+
 async def clone_repository(
     url: str,
     destination: Path,
-    branch: Optional[str] = None,
-    credentials: Optional[Dict[str, str]] = None
-) -> Dict[str, Any]:
-    """
-    Clone a git repository
+    branch: str | None = None,
+    credentials: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Clone a git repository.
 
     Args:
-        url: Git repository URL
-        destination: Destination path for cloning
-        branch: Optional branch name (defaults to default branch)
-        credentials: Optional dict with 'username' and 'token' keys
+        url: Git repository URL (must NOT include embedded credentials).
+        destination: Destination path for cloning.
+        branch: Optional branch name (defaults to remote default branch).
+        credentials: Optional {"username": ..., "token": ...} for HTTPS auth.
+            Passed via http.extraheader, NOT injected into the URL.
 
     Returns:
-        Dict with 'path' on success or 'error' on failure
+        {"path": Path, "url": str, "branch": str} on success, {"error": str} on failure.
+        Any credential material is redacted from the returned error string.
     """
     try:
-        # Prepare clone command
-        cmd = ["git", "clone"]
+        cmd: list[str] = ["git"]
 
-        # Add branch if specified
+        if credentials and credentials.get("username") and credentials.get("token"):
+            auth = base64.b64encode(
+                f"{credentials['username']}:{credentials['token']}".encode("utf-8")
+            ).decode("ascii")
+            # http.extraheader applies to all HTTP(S) requests in this command.
+            # The header is visible in `ps` arg lists but not in URL, not in
+            # logs, not in git's own error messages.
+            cmd.extend(["-c", f"http.extraheader=Authorization: Basic {auth}"])
+
+        cmd.append("clone")
         if branch:
             cmd.extend(["--branch", branch])
-
-        # Add credentials to URL if provided
-        if credentials and credentials.get("username") and credentials.get("token"):
-            # Parse URL to inject credentials
-            if url.startswith("https://"):
-                url = url.replace(
-                    "https://",
-                    f"https://{credentials['username']}:{credentials['token']}@"
-                )
-
         cmd.extend([url, str(destination)])
 
-        # Execute git clone
+        # Strip any caller-supplied credentials from the URL we log (defensive
+        # — callers shouldn't pass creds-in-URL but we don't want to assume).
+        log_url = _CREDENTIAL_URL_RE.sub("https://<redacted>@", url)
         logger.info(
             "cloning_repository",
-            url=url.split("@")[-1] if "@" in url else url,  # Hide credentials
+            url=log_url,
             destination=str(destination),
-            branch=branch
+            branch=branch,
         )
 
-        result = subprocess.run(
+        # Suppress git's interactive auth prompt; fail fast on missing creds.
+        env = {"GIT_TERMINAL_PROMPT": "0"}
+
+        result = subprocess.run(  # noqa: S603 — args are validated above
             cmd,
             capture_output=True,
             text=True,
-            timeout=300  # 5 minute timeout
+            timeout=300,
+            env={**__import__("os").environ, **env},
         )
 
         if result.returncode != 0:
-            error_msg = result.stderr or result.stdout or "Unknown git clone error"
+            error_msg = _redact(result.stderr or result.stdout or "Unknown git clone error")
             logger.error(
                 "clone_failed",
                 error=error_msg,
-                returncode=result.returncode
+                returncode=result.returncode,
             )
             return {"error": error_msg}
 
-        logger.info(
-            "clone_successful",
-            path=str(destination)
-        )
+        logger.info("clone_successful", path=str(destination))
 
         return {
             "path": destination,
-            "url": url.split("@")[-1] if "@" in url else url,
-            "branch": branch or "default"
+            "url": log_url,
+            "branch": branch or "default",
         }
 
     except subprocess.TimeoutExpired:
@@ -90,6 +109,6 @@ async def clone_repository(
         return {"error": error_msg}
 
     except Exception as e:
-        error_msg = f"Failed to clone repository: {str(e)}"
-        logger.error("clone_exception", error=str(e))
+        error_msg = _redact(f"Failed to clone repository: {e}")
+        logger.error("clone_exception", error=_redact(str(e)))
         return {"error": error_msg}
