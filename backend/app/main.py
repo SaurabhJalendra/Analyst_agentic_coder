@@ -649,14 +649,18 @@ async def serve_workspace_file(session_id: str, file_path: str, db: AsyncSession
         workspace_path = Path(session.workspace_path)
         full_path = workspace_path / file_path
 
-        # Security: Prevent path traversal attacks
+        # Security: prevent path traversal AND symlink-escape. We resolve both
+        # paths (following symlinks) and require the full_path to be a
+        # descendant of workspace_resolved. Using `relative_to` raises
+        # ValueError on escape — safer than string startswith which can be
+        # fooled by sibling directories sharing a prefix (e.g. `/ws-evil`
+        # passes `startswith("/ws")`).
         try:
-            full_path = full_path.resolve()
-            workspace_resolved = workspace_path.resolve()
-            if not str(full_path).startswith(str(workspace_resolved)):
-                raise HTTPException(status_code=403, detail="Access denied: path outside workspace")
-        except Exception:
-            raise HTTPException(status_code=403, detail="Invalid path")
+            full_path = full_path.resolve(strict=False)
+            workspace_resolved = workspace_path.resolve(strict=False)
+            full_path.relative_to(workspace_resolved)  # raises if outside
+        except (ValueError, OSError):
+            raise HTTPException(status_code=403, detail="Access denied: path outside workspace")
 
         if not full_path.exists():
             raise HTTPException(status_code=404, detail=f"File not found: {file_path}")

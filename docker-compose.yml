@@ -32,7 +32,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      # Cold-start budget: claude CLI auth + DB init + workspace cleanup can
+      # take 30-60s on a fresh container. 90s gives margin without delaying
+      # restarts of an already-warm container (which return /health in <1s).
+      start_period: 90s
+    stop_grace_period: 30s
     networks:
       - analyst-coder-network
 

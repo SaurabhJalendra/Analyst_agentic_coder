@@ -150,7 +150,11 @@ function Drawer({ side, onClose, children }: DrawerProps) {
         tabIndex={-1}
       />
       <aside
-        className={`fixed top-0 bottom-0 ${side === 'left' ? 'left-0 border-r' : 'right-0 border-l'} w-[min(360px,80vw)] bg-slate-50 border-slate-200 z-50 overflow-y-auto p-3 shadow-xl animate-slide-${side}`}
+        className={
+          side === 'left'
+            ? 'fixed top-0 bottom-0 left-0 border-r w-[min(360px,80vw)] bg-slate-50 border-slate-200 z-50 overflow-y-auto p-3 shadow-xl animate-slide-left'
+            : 'fixed top-0 bottom-0 right-0 border-l w-[min(360px,80vw)] bg-slate-50 border-slate-200 z-50 overflow-y-auto p-3 shadow-xl animate-slide-right'
+        }
         role="dialog"
         aria-modal="true"
       >

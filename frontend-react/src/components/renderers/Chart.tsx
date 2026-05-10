@@ -37,8 +37,6 @@ export function Chart({ data, layout, title, height = 240 }: ChartProps) {
   );
 }
 
-// Convenience demo data when an artifact card has no real series yet.
-export const DEMO_EQUITY_CURVE: Plotly.Data[] = [
-  { x: ['2010', '2014', '2018', '2022', '2024'], y: [1, 1.4, 1.85, 2.3, 2.8], type: 'scatter', mode: 'lines', line: { color: '#059669', width: 2 }, name: 'Strategy' },
-  { x: ['2010', '2014', '2018', '2022', '2024'], y: [1, 1.25, 1.55, 1.85, 2.1], type: 'scatter', mode: 'lines', line: { color: '#94a3b8', width: 1.5, dash: 'dash' }, name: 'Benchmark' },
-];
+// Default export so React.lazy() can consume Chart.tsx when an artifact card
+// (Phase 3) wires up real chart payloads.
+export default Chart;

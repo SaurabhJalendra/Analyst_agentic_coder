@@ -1,0 +1,57 @@
+name: frontend-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend-react/**'
+      - '.github/workflows/frontend-ci.yml'
+  pull_request:
+    paths:
+      - 'frontend-react/**'
+      - '.github/workflows/frontend-ci.yml'
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend-react
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend-react/package-lock.json
+
+      - name: Install dependencies
+        # Storybook 8's peer dep wants Vite <=6 but the project uses Vite 7;
+        # legacy-peer-deps unblocks install without affecting runtime behavior.
+        run: npm ci --legacy-peer-deps
+
+      - name: Type check (tsc strict)
+        run: npx tsc --noEmit
+
+      - name: Lint (eslint)
+        run: npm run lint
+
+      - name: Tests (vitest)
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Bundle size guard
+        # Hard cap on initial JS chunk — yesterday's lazy-load split brought
+        # this to ~100KB gzipped. Fail if it regresses past 200KB, which
+        # would mean a heavy dep snuck into the main entry.
+        run: |
+          size=$(stat -c %s dist/assets/index-*.js | head -1)
+          echo "Initial JS bundle: $size bytes"
+          if [ "$size" -gt 1048576 ]; then
+            echo "::error::Initial JS bundle exceeds 1 MB raw — investigate."
+            exit 1
+          fi

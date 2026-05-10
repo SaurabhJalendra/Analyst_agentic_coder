@@ -7,15 +7,28 @@ from app.database import Session, Message, ToolCall
 logger = structlog.get_logger()
 
 
+async def _release_runtime_resources(session_id: str) -> None:
+    """Release in-memory ClaudeCodeService instance and (best-effort) workspace.
+
+    Imported lazily to avoid a circular import (workspace_manager imports
+    db utilities indirectly via main.py). Failures are logged and swallowed
+    — DB deletion is the source of truth; runtime cleanup is hygiene.
+    """
+    try:
+        from app.workspace_manager import cleanup_claude_instance
+        await cleanup_claude_instance(session_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning("claude_instance_cleanup_failed", session_id=session_id, error=str(exc))
+
+
 async def delete_session(session_id: str, db: AsyncSession) -> dict:
-    """Delete a session and all associated data.
+    """Delete a session, cascade DB rows, and release in-memory state.
 
-    Args:
-        session_id: Session ID to delete
-        db: Database session
-
-    Returns:
-        Dict with status and message
+    Without the cleanup_claude_instance call, the per-session subprocess
+    wrapper in `workspace_manager._active_claude_instances` leaked forever —
+    one entry per chat ever created, until the backend restarts. This was
+    flagged in the 2026-04-30 audit and is the primary source of memory
+    growth in long-running deployments.
     """
     try:
         # Check if session exists
@@ -23,11 +36,18 @@ async def delete_session(session_id: str, db: AsyncSession) -> dict:
         session = result.scalar_one_or_none()
 
         if not session:
+            # Even if the DB row is gone, the runtime registry may still have an
+            # orphaned entry — clean it up regardless.
+            await _release_runtime_resources(session_id)
             return {"success": False, "message": f"Session {session_id} not found"}
 
         # Delete session (cascades to messages and tool_calls)
         await db.delete(session)
         await db.commit()
+
+        # Release in-memory state AFTER the commit so a partial DB failure
+        # doesn't strand a still-needed instance.
+        await _release_runtime_resources(session_id)
 
         logger.info("session_deleted", session_id=session_id)
         return {
@@ -158,13 +178,18 @@ async def cleanup_all_sessions(db: AsyncSession) -> dict:
     try:
         result = await db.execute(select(Session))
         sessions = result.scalars().all()
-
+        session_ids = [s.id for s in sessions]
         count = len(sessions)
 
         for session in sessions:
             await db.delete(session)
 
         await db.commit()
+
+        # Release every in-memory instance (per-session) AFTER commit so we
+        # don't strand a live subprocess if the DB delete failed.
+        for sid in session_ids:
+            await _release_runtime_resources(sid)
 
         logger.info("all_sessions_deleted", count=count)
         return {
