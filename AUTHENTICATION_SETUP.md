@@ -174,7 +174,7 @@ LOG_LEVEL=DEBUG
 ```bash
 curl http://localhost:8000/
 ```
-**Expected:** `{"message":"Claude Code Chatbot API","status":"running"}`
+**Expected:** `{"message":"Quant Agent API","status":"running"}`
 
 ### Test 2: Create a Session (via Frontend)
 1. Open Streamlit UI: http://localhost:8501

@@ -1,4 +1,4 @@
-# Frontend Dockerfile for Analyst Agentic Coder (React)
+# Frontend Dockerfile for Quant Agent (React)
 # Multi-stage build for optimal image size
 
 # Stage 1: Build the application

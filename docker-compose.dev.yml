@@ -8,7 +8,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: analyst-coder-backend-dev
+    container_name: quant-agent-backend-dev
     restart: unless-stopped
     environment:
       - CLAUDE_CODE_ACCESS_TOKEN=${CLAUDE_CODE_ACCESS_TOKEN}
@@ -31,14 +31,14 @@ services:
       - "${BACKEND_PORT:-8000}:8000"
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     networks:
-      - analyst-coder-network
+      - quant-agent-network
 
   # Frontend React Application (Development)
   frontend:
     build:
       context: ./frontend-react
       dockerfile: Dockerfile.dev
-    container_name: analyst-coder-frontend-dev
+    container_name: quant-agent-frontend-dev
     restart: unless-stopped
     environment:
       - VITE_API_URL=http://localhost:8000
@@ -51,12 +51,12 @@ services:
     depends_on:
       - backend
     networks:
-      - analyst-coder-network
+      - quant-agent-network
 
 volumes:
   claude_config:
     driver: local
 
 networks:
-  analyst-coder-network:
+  quant-agent-network:
     driver: bridge

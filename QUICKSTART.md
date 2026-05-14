@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get Claude Code Chatbot running in 5 minutes!
+Get Quant Agent running in 5 minutes!
 
 ## Prerequisites
 

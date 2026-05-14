@@ -12,7 +12,7 @@ export function BrandBar({ userIdentity, userTier, rmName }: BrandBarProps) {
         <span className="w-5 h-5 rounded bg-gradient-to-br from-gold-500 to-gold-700 text-brand-900 flex items-center justify-center font-black text-[11px]">
           Q
         </span>
-        Quant Console
+        Quant Agent
       </div>
       {(userIdentity || rmName) && (
         <div className="ml-auto text-right text-[10px] leading-tight">

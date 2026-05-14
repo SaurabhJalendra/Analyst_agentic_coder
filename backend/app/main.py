@@ -43,7 +43,7 @@ structlog.configure(
 logger = structlog.get_logger()
 
 # Initialize FastAPI app
-app = FastAPI(title="Claude Code Chatbot API")
+app = FastAPI(title="Quant Agent API")
 
 # Rate limiter — keyed on remote IP. Limits are conservative defaults; in
 # production, mount per-session-id keying once the auth layer lands.
@@ -309,7 +309,7 @@ async def _build_message_history(history, db: AsyncSession):
 @app.get("/")
 async def root():
     """Root endpoint."""
-    return {"message": "Claude Code Chatbot API", "status": "running"}
+    return {"message": "Quant Agent API", "status": "running"}
 
 @app.get("/health")
 async def health():
@@ -1009,7 +1009,7 @@ async def export_pdf(body: PDFExportRequest) -> StreamingResponse:  # noqa: PLR0
 
     # --- Cover page ---
     story.append(Spacer(1, 3 * cm))
-    story.append(Paragraph("Quant Console", title_style))
+    story.append(Paragraph("Quant Agent", title_style))
     story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#1a1a2e")))
     story.append(Spacer(1, 0.5 * cm))
     story.append(Paragraph(f"Session: <b>{session_id}</b>", body_style))
@@ -1056,14 +1056,14 @@ async def export_pdf(body: PDFExportRequest) -> StreamingResponse:  # noqa: PLR0
     story.append(HRFlowable(width="100%", thickness=1, color=colors.grey))
     story.append(Spacer(1, 0.3 * cm))
     disclosures = (
-        "This report was generated automatically by Quant Console. "
+        "This report was generated automatically by Quant Agent. "
         "The information contained herein is derived from automated analysis and "
         "should not be construed as financial or investment advice. "
         "All data sources are attributed within each artifact section. "
         "Past performance is not indicative of future results. "
         "Recipients should conduct their own due diligence before acting on any "
         "information presented in this report. "
-        "Quant Console and its operators make no representations or warranties "
+        "Quant Agent and its operators make no representations or warranties "
         "regarding the accuracy or completeness of the data presented."
     )
     story.append(Paragraph(disclosures, body_style))

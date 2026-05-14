@@ -6,7 +6,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: analyst-coder-backend
+    container_name: quant-agent-backend
     restart: unless-stopped
     environment:
       - CLAUDE_CODE_ACCESS_TOKEN=${CLAUDE_CODE_ACCESS_TOKEN}
@@ -38,14 +38,14 @@ services:
       start_period: 90s
     stop_grace_period: 30s
     networks:
-      - analyst-coder-network
+      - quant-agent-network
 
   # Frontend React Application
   frontend:
     build:
       context: ./frontend-react
       dockerfile: Dockerfile
-    container_name: analyst-coder-frontend
+    container_name: quant-agent-frontend
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-80}:80"
@@ -59,7 +59,7 @@ services:
       retries: 3
       start_period: 5s
     networks:
-      - analyst-coder-network
+      - quant-agent-network
 
 volumes:
   workspaces_data:
@@ -70,5 +70,5 @@ volumes:
     driver: local
 
 networks:
-  analyst-coder-network:
+  quant-agent-network:
     driver: bridge

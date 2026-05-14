@@ -1,4 +1,4 @@
-# Backend Dockerfile for Analyst Agentic Coder
+# Backend Dockerfile for Quant Agent
 FROM python:3.11-slim
 
 # Set environment variables

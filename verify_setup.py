@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Claude Code Chatbot setup."""
+"""Verify Quant Agent setup."""
 import sys
 import os
 from pathlib import Path
@@ -43,7 +43,7 @@ def check_dependencies():
 
 def main():
     """Run setup verification."""
-    print("🔍 Claude Code Chatbot - Setup Verification\n")
+    print("🔍 Quant Agent - Setup Verification\n")
     print("=" * 50)
 
     checks = [

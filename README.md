@@ -1,26 +1,22 @@
-# Claude Code Chatbot
+# Quant Agent
 
-A powerful chatbot interface that leverages Claude AI to perform various coding operations including file manipulation, code search, command execution, and git operations.
+An institutional-client research console — a Claude AI agent for quant analysis and report generation, wrapping the `claude` CLI in a per-session sandbox.
 
 ## Features
 
-- **Chat Interface**: Natural language interaction with Claude AI
-- **File Operations**: Read, write, and edit files with intelligent suggestions
-- **Code Search**: Advanced grep and glob patterns for finding code
-- **Git Operations**: Clone, commit, push, pull, and manage repositories
-- **Command Execution**: Run shell commands and scripts
-- **Plan Approval**: Review all operations before execution for safety
-- **Multi-Repository**: Work with multiple repositories and local codebases
-- **Session Management**: Isolated workspaces per session
-- **Debug Logging**: Comprehensive logging for troubleshooting
+- **Agentic chat** with live streaming of plan, sub-agents, tool calls, and source access
+- **Per-session workspaces** — each chat clones into its own isolated git repo
+- **Branded artifacts** — charts (Plotly), tables (TanStack), code blocks, markdown + LaTeX
+- **Audit log + methodology trail** — every prompt and tool call traceable, exportable to PDF
+- **Compliance bar** — entitlements + MNPI walls indicator + disclosures footer
 
 ## Architecture
 
-- **Backend**: FastAPI with async support
-- **Frontend**: Streamlit for intuitive UI
-- **AI**: Claude 3.5 Sonnet with tool calling
-- **Database**: SQLite for chat history
-- **Tools**: Custom implementations of file, search, bash, and git operations
+- **Backend**: FastAPI + SSE streaming of typed events from the `claude` CLI subprocess
+- **Frontend**: React 19 + TypeScript + Tailwind v4 + Zustand, three-pane "Quant Agent" console
+- **AI**: Claude Code CLI (not the Anthropic SDK) — see `wiki/concepts/claude-code-cli-vs-sdk.md`
+- **Database**: SQLite with audit-log + artifacts tables
+- **Deploy**: Docker compose (prod + dev variants)
 
 ## Prerequisites
 
