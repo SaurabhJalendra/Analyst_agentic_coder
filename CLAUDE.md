@@ -43,9 +43,10 @@ React (Vite/Nginx) ──► FastAPI ──► ClaudeCodeService (per-session su
                           └── workspaces/{uuid}/  (git-cloned repos)
 ```
 
-- One Claude CLI instance per session, stored in `workspace_manager._active_claude_instances`.
-- System prompt rebuilt on every chat request (Phase 2 fix, commit `43c04eb`) with fresh git context.
-- Frontend polls `/api/progress/{id}` every 1000ms during long requests; no SSE/WebSocket.
+- Per-message Claude CLI subprocess (the `_active_claude_instances` registry holds a `ClaudeCodeService` wrapper per session; each `send_message` spawns a fresh `claude` subprocess).
+- System prompt rebuilt on every chat request with fresh git context.
+- **SSE** streaming from `GET /api/chat/stream/{session_id}` (replaced the old polling endpoint in commit `4f1b940`). Frontend uses `EventSource` with `Last-Event-ID` reconnect.
+- `cli_translator.py` maps real Claude CLI `system`/`assistant`/`user`/`result` events into our typed Pydantic schema.
 
 ---
 
@@ -69,14 +70,32 @@ No Python test runner is configured. `backend/test_endpoint.py` and `backend/tes
 
 ## Known Issues / Tech Debt
 
-These should be fixed before this is used by anyone other than the author. Tracked here so any future work can pick them up:
+Open items as of 2026-05-20. Full audit at `docs/audit/2026-05-20-deep-audit.md`; ranked next-actions in `ROADMAP.md`.
 
-1. **Path-traversal hole**: `GET /api/files/{path:path}` reads any file on disk — no workspace boundary check. The `/api/workspace/{id}/files/...` endpoints are correctly guarded; this one isn't.
-2. **Hardcoded CLI path**: `claude_code_service.py:37` hardcodes `C:\Users\Saurabh\.local\bin\claude.exe`. Breaks on every other machine and inside the Linux container. Use `shutil.which("claude")`.
-3. **Git creds in URL logs**: `git_utils.py:55` embeds tokens into the clone URL; visible in subprocess stdout.
-4. **CORS = `*` + no auth + no rate limiting**: fine for localhost, dangerous if exposed.
-5. **Half-implemented plan-approval**: `requires_approval` flows to `ChatResponse` but the React UI never renders an approval step.
-6. **Repo hygiene**: `nul` (empty Windows redirection accident), `docker-entrypoint.sh` (dead — refers to old Streamlit), unused `anthropic` SDK in `requirements.txt`, unused `react-syntax-highlighter` in `package.json`.
+### Critical (block any client pilot)
+1. **`AuditLogger` is never instantiated in production code** — `audit_log` table is permanently empty. `/api/audit/{id}` returns nothing real; PDF "audit ID" is decorative. (`backend/app/main.py` chat handler, see audit C1.)
+2. **Compliance bar is cosmetic** — "MNPI walls: ON" and "Entitlements: ..." have no enforcement anywhere in the call path. Audit finding C2.
+3. **Path-traversal still open on `/api/workspace/{id}/list/`** at `main.py:723` — uses string `startswith()` (sibling-traversal possible). The `/files/` endpoint at line 661 was fixed; this one wasn't. Audit C3.
+4. **`main.py` is 1,084 lines** with 25+ endpoints — needs router split. Audit C5.
+5. **`⌘K` is a dead `<span>`** in StatusBar — visual lie. Either wire a command palette or remove. Audit C4.
+6. **Internal-DAU gate (rule 6g) not passed** — no 7-day daily use by the author.
+
+### Important
+- Stale UI placeholders: hardcoded `opus-4.7 ▾` model selector, BrandBar without identity (intentional until auth lands).
+- Frontend has no `<ErrorBoundary>` and no client-side error telemetry.
+- No observability (no `/metrics`, no Sentry, no OTel).
+- SQLite lacks WAL mode and a backup story.
+- 71 mypy strict errors / 119 ruff issues (53 auto-fixable).
+- No retention policy on `audit_log` / `artifacts` once they're populated.
+- UTF-8-on-chunk-boundary risk in the SSE stdout reader (`claude_code_service.py:130`).
+- `get_or_create_service` factory race (no lock around the lookup-or-create).
+
+### Fixed (kept for changelog continuity)
+- ✅ Path-traversal on `/api/files/{path}` (endpoint removed, commit `327bf5c`).
+- ✅ Hardcoded CLI path (replaced with `shutil.which`, commit `909c62b`).
+- ✅ Git creds in URL logs (now `http.extraheader`, commit `bafe480`).
+- ✅ CORS `*` (now env-driven allowlist).
+- ✅ `nul`, `docker-entrypoint.sh`, unused `anthropic` and `react-syntax-highlighter` deps — all removed.
 
 ---
 
@@ -92,5 +111,6 @@ These should be fixed before this is used by anyone other than the author. Track
 
 _(Update between sessions only — not mid-session)_
 
-- Project setup just initialized via `SETUP.md` on 2026-04-29.
-- Next: pick a known-issue from the list above, or start a feature.
+- 2026-05-20 deep audit complete. Findings: `docs/audit/2026-05-20-deep-audit.md`. ADRs filed for CLI-over-SDK, SSE, SQLite, no-auth. LICENSE + CHANGELOG seeded.
+- Next wave (per ROADMAP.md): C1 audit-write wiring, C2 compliance enforcement decision, C3 list-endpoint path fix, C5 main.py router split, C4 ⌘K wire-or-remove.
+- Then Internal-DAU dogfooding week before any external demo.
