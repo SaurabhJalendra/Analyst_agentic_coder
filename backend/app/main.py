@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
+from app.audit_logger import AuditLogger
 from app.database import init_db, get_db, Session as DBSession, Message, ToolCall
 from app.workspace_manager import workspace_manager, get_claude_instance, cleanup_claude_instance, cleanup_all_claude_instances
 from app.db_utils import delete_session, list_sessions, validate_session_messages, cleanup_all_sessions
@@ -66,6 +67,10 @@ app.add_middleware(
 # claude_service = ClaudeService()
 # Note: Now using Claude Code CLI instances managed per-session
 
+# Operator identity — used as client_slug in audit rows.
+# Override via OPERATOR_NAME env var in production deployments.
+OPERATOR: str = os.environ.get("OPERATOR_NAME", "local")
+
 # Module-level SSE event broker (injectable for testing)
 _broker = EventBroker()
 
@@ -73,6 +78,20 @@ _broker = EventBroker()
 def get_broker() -> EventBroker:
     """Dependency: returns the module-level EventBroker."""
     return _broker
+
+
+# Path to the audit/artifacts SQLite DB — declared here so get_audit_logger()
+# and the Phase 3 endpoints share the same reference. Tests monkeypatch this.
+# (The duplicate declaration further down is removed below.)
+_audit_db_path: Path = Path(__file__).parent.parent / "chatbot.db"
+
+# Module-level audit logger (injectable for testing via get_audit_logger dep).
+_audit_logger: AuditLogger = AuditLogger(_audit_db_path)
+
+
+def get_audit_logger() -> AuditLogger:
+    """Dependency: returns the module-level AuditLogger."""
+    return _audit_logger
 
 
 def get_claude_factory() -> Callable[..., Any]:
@@ -84,6 +103,8 @@ def get_claude_factory() -> Callable[..., Any]:
             workspace_path=workspace_path,
             session_id=session_id,
             broker=_broker,
+            audit_logger=_audit_logger,
+            operator=OPERATOR,
         )
     return factory
 
@@ -140,9 +161,6 @@ class PDFExportRequest(BaseModel):
     artifact_ids: list[str] | None = None
     narrative: str | None = None
 
-
-# Path to the audit/artifacts SQLite DB (overridable in tests via monkeypatch)
-_audit_db_path: Path = Path(__file__).parent.parent / "chatbot.db"
 
 @app.on_event("startup")
 async def startup():
@@ -324,6 +342,7 @@ async def chat(
     db: AsyncSession = Depends(get_db),
     broker: EventBroker = Depends(get_broker),
     claude_factory=Depends(get_claude_factory),
+    audit: AuditLogger = Depends(get_audit_logger),
 ):
     """Handle chat message — fires Claude Code in the background and returns 202 immediately."""
     session_id = None
@@ -406,6 +425,17 @@ async def chat(
         )
         db.add(user_message_record)
         await db.commit()
+
+        # Audit the user prompt — failure must NOT fail the chat request.
+        try:
+            await audit.append_event(
+                session_id,
+                "user.prompt",
+                {"text": chat_request.message},
+                OPERATOR,
+            )
+        except Exception as _audit_exc:
+            logger.warning("audit_user_prompt_failed", error=str(_audit_exc), session_id=session_id)
 
         # Determine working directory for Claude Code
         workspace_path = Path(session.active_repo) if session.active_repo else Path(session.workspace_path)
@@ -716,14 +746,17 @@ async def list_workspace_directory(session_id: str, directory_path: str = "", db
         else:
             full_path = workspace_path
 
-        # Security check
+        # Security: prevent path traversal AND symlink-escape. Resolve both
+        # paths (following symlinks); require full_path to be a descendant of
+        # workspace_resolved. relative_to() raises ValueError on escape —
+        # safer than str.startswith(), which a sibling dir sharing a prefix
+        # (e.g. workspace `/ws` vs `/ws-evil`) would defeat.
         try:
-            full_path = full_path.resolve()
-            workspace_resolved = workspace_path.resolve()
-            if not str(full_path).startswith(str(workspace_resolved)):
-                raise HTTPException(status_code=403, detail="Access denied")
-        except Exception:
-            raise HTTPException(status_code=403, detail="Invalid path")
+            full_path = full_path.resolve(strict=False)
+            workspace_resolved = workspace_path.resolve(strict=False)
+            full_path.relative_to(workspace_resolved)  # raises if outside
+        except (ValueError, OSError):
+            raise HTTPException(status_code=403, detail="Access denied: path outside workspace")
 
         if not full_path.exists():
             raise HTTPException(status_code=404, detail="Directory not found")

@@ -25,6 +25,25 @@ class AuditLogger:
         self._db_path = db_path
         self._lock = asyncio.Lock()
 
+    async def append_event(
+        self,
+        session_id: str,
+        event_type: str,
+        data: dict,
+        client_slug: str,
+        entitlements_snapshot: dict[str, object] | None = None,
+    ) -> str:
+        """Raw path: takes an event type string + a plain dict payload."""
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._append_sync_raw,
+                session_id,
+                event_type,
+                json.dumps(data),
+                client_slug,
+                entitlements_snapshot,
+            )
+
     async def append(
         self,
         session_id: str,
@@ -32,15 +51,22 @@ class AuditLogger:
         client_slug: str,
         entitlements_snapshot: dict[str, object] | None = None,
     ) -> str:
+        """Typed path: delegates to append_event using the event's own serialisation."""
         async with self._lock:
             return await asyncio.to_thread(
-                self._append_sync, session_id, event, client_slug, entitlements_snapshot
+                self._append_sync_raw,
+                session_id,
+                event.type,
+                event.model_dump_json(),
+                client_slug,
+                entitlements_snapshot,
             )
 
-    def _append_sync(
+    def _append_sync_raw(
         self,
         session_id: str,
-        event: AnyEvent,
+        event_type: str,
+        data_json: str,
         client_slug: str,
         entitlements_snapshot: dict[str, object] | None,
     ) -> str:
@@ -66,9 +92,9 @@ class AuditLogger:
                         "VALUES (?, ?, ?, ?, ?)",
                         (
                             session_id,
-                            event.type,
+                            event_type,
                             audit_id,
-                            event.model_dump_json(),
+                            data_json,
                             json.dumps(entitlements_snapshot) if entitlements_snapshot else None,
                         ),
                     )
@@ -86,3 +112,22 @@ class AuditLogger:
             raise RuntimeError("audit_logger: exceeded retry budget under contention")
         finally:
             conn.close()
+
+    # ------------------------------------------------------------------
+    # Legacy private alias — kept so external callers that directly invoke
+    # _append_sync (if any) continue to work; delegates to raw path.
+    # ------------------------------------------------------------------
+    def _append_sync(
+        self,
+        session_id: str,
+        event: AnyEvent,
+        client_slug: str,
+        entitlements_snapshot: dict[str, object] | None,
+    ) -> str:
+        return self._append_sync_raw(
+            session_id,
+            event.type,
+            event.model_dump_json(),
+            client_slug,
+            entitlements_snapshot,
+        )

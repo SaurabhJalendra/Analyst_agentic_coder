@@ -18,6 +18,7 @@ import os
 import shutil
 from collections.abc import AsyncIterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -26,7 +27,13 @@ from app.event_broker import EventBroker
 from app.event_schema import DoneEvent, ErrorEvent
 from app.stream_parser import StreamParser  # noqa: F401  (kept for tests/legacy)
 
+if TYPE_CHECKING:
+    from app.audit_logger import AuditLogger
+
 _log = structlog.get_logger(__name__)
+
+# Event types that are worth persisting in the audit log.
+_AUDIT_EVENT_TYPES: frozenset[str] = frozenset({"tool.start", "tool.done", "error", "done"})
 
 
 def resolve_claude_path() -> str:
@@ -52,6 +59,8 @@ class ClaudeCodeService:
         claude_cmd: list[str] | None = None,
         env_overrides: dict[str, str] | None = None,
         timeout_seconds: float = 600.0,
+        audit_logger: AuditLogger | None = None,
+        operator: str = "local",
     ) -> None:
         self._workspace_path = workspace_path
         self._session_id = session_id
@@ -61,6 +70,8 @@ class ClaudeCodeService:
         self._timeout_seconds = timeout_seconds
         self._crashed_flag = False  # test hook
         self._lock = asyncio.Lock()
+        self._audit_logger = audit_logger
+        self._operator = operator
 
     def is_alive(self) -> bool:
         return not self._crashed_flag
@@ -133,6 +144,18 @@ class ClaudeCodeService:
                     await self._broker.publish(self._session_id, ev)
                     if isinstance(ev, DoneEvent):
                         emitted_done = True
+                    # Audit key agent events — never let audit failure break the stream.
+                    if self._audit_logger is not None and ev.type in _AUDIT_EVENT_TYPES:
+                        try:
+                            await self._audit_logger.append(
+                                self._session_id, ev, self._operator
+                            )
+                        except Exception as _audit_exc:
+                            _log.warning(
+                                "claude_code_service.audit_failed",
+                                event_type=ev.type,
+                                error=str(_audit_exc),
+                            )
         except Exception as exc:  # pragma: no cover - defensive
             _log.exception("claude_code_service.reader_crash", error=str(exc))
             await self._broker.publish(
@@ -163,7 +186,14 @@ class ClaudeCodeService:
             await self._publish_synthetic_done()
 
     async def _publish_synthetic_done(self) -> None:
-        await self._broker.publish(
-            self._session_id,
-            DoneEvent(type="done", session_id=self._session_id),
-        )
+        ev = DoneEvent(type="done", session_id=self._session_id)
+        await self._broker.publish(self._session_id, ev)
+        if self._audit_logger is not None:
+            try:
+                await self._audit_logger.append(self._session_id, ev, self._operator)
+            except Exception as _audit_exc:
+                _log.warning(
+                    "claude_code_service.audit_failed",
+                    event_type="done",
+                    error=str(_audit_exc),
+                )
