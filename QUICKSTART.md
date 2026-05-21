@@ -13,8 +13,8 @@ Get Quant Agent running in 5 minutes!
 ### Step 1: Clone and Navigate
 
 ```bash
-git clone <your-repo-url>
-cd Analyst_agentic_coder
+git clone https://github.com/SaurabhJalendra/quant-agent.git
+cd quant-agent
 ```
 
 ### Step 2: Configure API Key

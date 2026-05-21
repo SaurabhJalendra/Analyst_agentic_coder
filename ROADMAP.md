@@ -76,7 +76,7 @@ The plan reflects the post-audit reality: real architecture, hollow guarantees, 
 - 2026-04-30: 6 Critical audit fixes (git creds, audit-id atomicity, broker session GC, slowapi, EventSource cleanup, sessionStore race).
 - 2026-04-29: Phase 3 polish (Plotly, TanStack, methodology panel, audit tab, PDF export, history reload).
 - 2026-04-29: Phase 3 backend (audit list, methodology, PDF export endpoints).
-- 2026-04-29: Phase 2 frontend (three-pane Quant Console shell, Zustand store, SSE consumer).
+- 2026-04-29: Phase 2 frontend (three-pane console shell, Zustand store, SSE consumer).
 - 2026-04-29: Phase 1 backend (typed event schema, async stream-json parser, event broker with Last-Event-ID, audit logger, ClaudeCodeService rewrite with stream-json + shutil.which + restart_if_needed + --verbose, SSE endpoint, 202 POST /api/chat, GitHub Actions CI).
 
 ---
