@@ -31,9 +31,8 @@ export function StatusBar() {
           Sources: {sources.join(' · ')}
         </span>
       )}
-      <span className="ml-auto cursor-pointer">⌘K</span>
       {session.isStreaming && (
-        <span className="bg-white border border-slate-200 rounded-full px-2.5 py-0.5 text-red-600 cursor-pointer">
+        <span className="ml-auto bg-white border border-slate-200 rounded-full px-2.5 py-0.5 text-red-600 cursor-pointer">
           Halt
         </span>
       )}
