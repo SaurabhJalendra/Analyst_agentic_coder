@@ -67,3 +67,11 @@ htmlcov/
 
 # OS
 Thumbs.db
+
+# Wiki — raw sources are private by default. Wiki pages themselves ARE tracked.
+wiki/sources/*
+!wiki/sources/README.md
+!wiki/sources/.gitkeep
+
+# Superpowers brainstorming sessions (visual companion mockups)
+.superpowers/
