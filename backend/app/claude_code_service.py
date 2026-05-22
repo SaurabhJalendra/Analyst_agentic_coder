@@ -16,15 +16,17 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-from collections.abc import AsyncIterable
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
 
+from app import artifact_store
+from app.artifact_scanner import scan_for_charts
 from app.cli_translator import CLITranslator
 from app.event_broker import EventBroker
-from app.event_schema import DoneEvent, ErrorEvent
+from app.event_schema import ArtifactCreateEvent, DoneEvent, ErrorEvent
 from app.stream_parser import StreamParser  # noqa: F401  (kept for tests/legacy)
 
 if TYPE_CHECKING:
@@ -61,6 +63,7 @@ class ClaudeCodeService:
         timeout_seconds: float = 600.0,
         audit_logger: AuditLogger | None = None,
         operator: str = "local",
+        artifacts_db_path: Path | None = None,
     ) -> None:
         self._workspace_path = workspace_path
         self._session_id = session_id
@@ -72,6 +75,7 @@ class ClaudeCodeService:
         self._lock = asyncio.Lock()
         self._audit_logger = audit_logger
         self._operator = operator
+        self._artifacts_db_path = artifacts_db_path
 
     def is_alive(self) -> bool:
         return not self._crashed_flag
@@ -105,7 +109,8 @@ class ClaudeCodeService:
                 # Still emit a synthetic Done so subscribers close.
                 await self._publish_synthetic_done()
 
-    async def _run_one(self, prompt: str) -> None:
+    async def _run_one(self, prompt: str) -> None:  # noqa: PLR0912
+        turn_start = time.time()
         env = {**os.environ, **self._env_overrides}
         cmd = [
             *self._claude_cmd,
@@ -184,6 +189,40 @@ class ClaudeCodeService:
 
         if not emitted_done:
             await self._publish_synthetic_done()
+
+        # Scan for chart artifacts written during this turn.
+        # A scan failure must NOT break the stream — log a warning and continue.
+        if self._artifacts_db_path is not None:
+            try:
+                charts = scan_for_charts(self._workspace_path, turn_start)
+                for chart in charts:
+                    artifact_store.insert_artifact(
+                        self._artifacts_db_path,
+                        artifact_id=chart.artifact_id,
+                        session_id=self._session_id,
+                        kind="chart",
+                        title=chart.title,
+                        source_attribution="Generated in session",
+                        methodology_id=chart.artifact_id,
+                        file_path=str(chart.file_path),
+                    )
+                    await self._broker.publish(
+                        self._session_id,
+                        ArtifactCreateEvent(
+                            type="artifact",
+                            artifact_id=chart.artifact_id,
+                            kind="chart",
+                            title=chart.title,
+                            source_attribution="Generated in session",
+                            methodology_id=chart.artifact_id,
+                        ),
+                    )
+            except Exception as _scan_exc:
+                _log.warning(
+                    "claude_code_service.artifact_scan_failed",
+                    error=str(_scan_exc),
+                    session_id=self._session_id,
+                )
 
     async def _publish_synthetic_done(self) -> None:
         ev = DoneEvent(type="done", session_id=self._session_id)

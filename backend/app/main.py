@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
+from app.artifact_store import get_artifact
 from app.audit_logger import AuditLogger
 from app.database import init_db, get_db, Session as DBSession, Message, ToolCall
 from app.workspace_manager import workspace_manager, get_claude_instance, cleanup_claude_instance, cleanup_all_claude_instances
@@ -105,6 +106,7 @@ def get_claude_factory() -> Callable[..., Any]:
             broker=_broker,
             audit_logger=_audit_logger,
             operator=OPERATOR,
+            artifacts_db_path=_audit_db_path,
         )
     return factory
 
@@ -252,11 +254,27 @@ def _build_system_prompt(session: DBSession) -> str:
             "- Git commands work normally\n\n"
         )
 
+    _chart_example = (
+        '{"title": "Price", "data": [{"type": "scatter", "x": [1, 2], '
+        '"y": [10, 20], "mode": "lines"}], '
+        '"layout": {"xaxis": {"title": "Day"}, "yaxis": {"title": "USD"}}}'
+    )
     system_prompt += (
         "Use the available tools to help the user. When you need to perform operations, "
         "use the appropriate tools. You can use multiple tools in sequence to complete tasks.\n\n"
         "REMEMBER: You are working in the active repository shown above. "
-        "All git commands will automatically target this repository unless you specify otherwise."
+        "All git commands will automatically target this repository unless you specify otherwise.\n\n"
+        "CHART CONVENTION:\n"
+        "To produce a chart that renders in the UI, write a file named "
+        "artifacts/<name>.chart.json in the workspace root. "
+        'The file must be a valid Plotly payload: {"title": str, "data": [traces], "layout": {}}. '
+        "Example (a 2-point scatter): "
+        + _chart_example + "\n"
+        "Create the artifacts/ directory if it does not exist before writing.\n\n"
+        "MARKET DATA:\n"
+        "You may use yfinance to pull equity OHLCV data. Save it as "
+        "data/<ticker>.parquet in the workspace for backtests and analysis. "
+        "Example: import yfinance as yf; yf.download('SPY', period='1y').to_parquet('data/SPY.parquet')."
     )
 
     return system_prompt
@@ -952,6 +970,57 @@ async def get_artifact_methodology(artifact_id: str) -> dict[str, object]:  # no
             "sources": sources,
             "agents_involved": agents_list,
             "narrative": narrative,
+        },
+    }
+
+
+@app.get("/api/artifacts/{artifact_id}/payload")
+async def get_artifact_payload(artifact_id: str) -> dict[str, object]:
+    """Return the stored payload for a chart artifact.
+
+    For kind='chart': reads the on-disk *.chart.json and returns
+    ``{"artifact_id", "kind", "title", "payload": {"data", "layout"}}``.
+    Returns 404 for unknown artifact IDs, missing files, or non-chart kinds.
+    """
+    import json as _json
+
+    row = get_artifact(_audit_db_path, artifact_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Artifact '{artifact_id}' not found")
+
+    if row["kind"] != "chart":
+        raise HTTPException(
+            status_code=404,
+            detail=f"No payload for artifact kind '{row['kind']}' — only charts have payloads",
+        )
+
+    file_path = row.get("file_path")
+    if not file_path:
+        raise HTTPException(
+            status_code=404,
+            detail="Artifact has no associated file",
+        )
+
+    chart_file = Path(file_path)
+    if not chart_file.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Chart file not found on disk: {file_path}",
+        )
+
+    try:
+        payload = _json.loads(chart_file.read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError) as exc:
+        logger.error("artifact_payload_read_error", error=str(exc), artifact_id=artifact_id)
+        raise HTTPException(status_code=500, detail="Failed to read chart file") from exc
+
+    return {
+        "artifact_id": artifact_id,
+        "kind": "chart",
+        "title": row["title"],
+        "payload": {
+            "data": payload.get("data", []),
+            "layout": payload.get("layout", {}),
         },
     }
 
