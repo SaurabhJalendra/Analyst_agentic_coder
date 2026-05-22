@@ -3,6 +3,7 @@ import { useSessionStore } from '../../store/sessionStore';
 import { UserMessage } from './UserMessage';
 import { ThinkingBlock } from './ThinkingBlock';
 import { BrandedArtifactCard } from './BrandedArtifactCard';
+import { ChartArtifactBody } from './ChartArtifactBody';
 import { SubAgentIndicator } from './SubAgentIndicator';
 import { PlanRail } from './PlanRail';
 
@@ -42,11 +43,13 @@ export function ChatStream() {
                 key={turn.id}
                 artifact={turn.artifact}
                 body={
-                  <div className="text-[10px] text-slate-500 italic">
-                    {turn.artifact.kind === 'chart'
-                      ? 'Chart payload not yet emitted by backend (deferred).'
-                      : `${turn.artifact.kind} rendering deferred.`}
-                  </div>
+                  turn.artifact.kind === 'chart' ? (
+                    <ChartArtifactBody artifactId={turn.artifact.id} />
+                  ) : (
+                    <div className="text-[10px] text-slate-500 italic">
+                      {`${turn.artifact.kind} rendering deferred.`}
+                    </div>
+                  )
                 }
               />
             );
