@@ -1,6 +1,6 @@
 # Quant Agent — Roadmap
 
-**Last updated:** 2026-05-21 (post-pivot to P1 + dogfood-first sequencing)
+**Last updated:** 2026-07-08 (Milestone 0 closed; chart pipeline shipped)
 **Vision:** `IDEA.md` · **Audit:** `docs/audit/2026-05-20-deep-audit.md` · **Current slice spec:** `docs/superpowers/specs/2026-05-21-vertical-slice.md`
 
 ## How we build (the Anthropic way)
@@ -15,7 +15,9 @@ The compliance-honesty + security fixes from the deep audit. Correct under every
 - ✅ C2 — removed cosmetic compliance labels (honest pilot framing)
 - ✅ C3 — path-traversal fix on `/api/workspace/{id}/list/`
 - ✅ C4 — removed dead ⌘K span
-- ◐ C1 — wire `AuditLogger` into the chat pipeline (in progress)
+- ✅ C1 — wired `AuditLogger` into the chat pipeline (every chat turn now writes an audit row)
+
+**Milestone 0 closed** — all four audit-honesty/security fixes (C1–C4) shipped. Remaining structural item (C5, `main.py` router split) moved to Milestone 3+.
 
 ---
 
@@ -24,9 +26,9 @@ The compliance-honesty + security fixes from the deep audit. Correct under every
 The thinnest end-to-end build that makes the daily backtest dogfood *real*. Spec: `docs/superpowers/specs/2026-05-21-vertical-slice.md`.
 
 **In the slice:**
-1. **Chart payload pipeline** — backend emits real series in `ArtifactCreateEvent`; frontend renders a live Plotly chart. *This is the single most important item — without the equity curve, day 1 of dogfood fails.*
-2. **Data into the workspace** — a `yfinance → parquet` capability as a local stand-in for the bank-data connector. The agent can pull equity OHLCV into the session workspace.
-3. **The loop works** — analyst asks for a backtest → agent loads data → writes + runs backtest code → notebook cell shows code + DataFrame + the equity-curve chart.
+1. ✅ **Chart payload pipeline** — backend emits real series in `ArtifactCreateEvent`; frontend renders a live Plotly chart from the payload (`e7d7a5b`, `fb675e7`). *The single most important item — shipped.*
+2. ◐ **Data into the workspace** — a `yfinance → parquet` capability as a local stand-in for the bank-data connector. The agent can pull equity OHLCV into the session workspace.
+3. ◐ **The loop works** — analyst asks for a backtest → agent loads data → writes + runs backtest code → notebook cell shows code + DataFrame + the equity-curve chart.
 
 **Out of the slice (waits for dogfood signal):** real bank-data connector, specialized sub-agents, report agent / branded PDF, routines, wiki compounding, observability, auth.
 

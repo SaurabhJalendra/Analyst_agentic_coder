@@ -43,7 +43,7 @@ chmod +x start.sh
 ### Step 4: Open in Browser
 
 The application will automatically open at:
-- **Frontend**: http://localhost:8501
+- **Frontend**: http://localhost:3000
 - **Backend API**: http://localhost:8000
 
 ## First Steps
@@ -85,14 +85,10 @@ python -m uvicorn app.main:app --reload --port 8000
 ### Terminal 2 - Frontend
 
 ```bash
-# Activate same venv
-venv\Scripts\activate  # Windows
-source venv/bin/activate  # Linux/Mac
-
-# Install dependencies and run
-cd frontend
-pip install -r requirements.txt
-streamlit run streamlit_app.py
+# Node 20+ required (no venv — this is the React/Vite app)
+cd frontend-react
+npm install
+npm run dev  # serves http://localhost:3000, proxies /api/ to :8000
 ```
 
 ## Docker Setup (Alternative)
@@ -110,7 +106,7 @@ cp .env.example .env
 docker-compose up --build
 ```
 
-Access at http://localhost:8501
+Access at http://localhost:3000
 
 ## Troubleshooting
 

@@ -92,8 +92,8 @@ python -m uvicorn app.main:app --reload --port 8000
 
 **Terminal 2 - Frontend:**
 ```bash
-cd frontend
-streamlit run streamlit_app.py
+cd frontend-react
+npm run dev  # http://localhost:3000
 ```
 
 ---
@@ -177,7 +177,7 @@ curl http://localhost:8000/
 **Expected:** `{"message":"Quant Agent API","status":"running"}`
 
 ### Test 2: Create a Session (via Frontend)
-1. Open Streamlit UI: http://localhost:8501
+1. Open the React UI: http://localhost:3000
 2. Send a message: "Hello, can you list files?"
 3. Watch backend logs for:
    - ✅ Session created
@@ -256,7 +256,7 @@ You should see session directories, each with:
 ✅ **Full autonomous permissions** for script execution
 ✅ **statement-pipelines auto-cloned** for each session
 
-**Next Step:** Start using the application! Open the Streamlit UI and start chatting with Claude Code.
+**Next Step:** Start using the application! Open the React UI at http://localhost:3000 and start chatting with Claude Code.
 
 ---
 

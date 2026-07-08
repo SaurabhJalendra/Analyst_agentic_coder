@@ -90,8 +90,8 @@ python -m uvicorn app.main:app --reload --port 8000
 
 **Frontend:**
 ```bash
-cd frontend
-streamlit run streamlit_app.py
+cd frontend-react
+npm run dev  # http://localhost:3000
 ```
 
 ## 📁 Architecture

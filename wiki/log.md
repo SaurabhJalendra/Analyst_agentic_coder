@@ -80,3 +80,20 @@
 **Source:** Audit report at `docs/audit/2026-05-20-deep-audit.md`.
 
 ---
+
+## 2026-07-08T00:00 — Doc sync to current state (post chart-pipeline + audit fixes)
+
+**Trigger:** Manual — user asked to update README + other docs after shipping the chart pipeline and closing audit C1–C4.
+**Pages touched:** README.md, CHANGELOG.md, ROADMAP.md, QUICKSTART.md, CLAUDE_CODE_SETUP.md, AUTHENTICATION_SETUP.md
+**Key claims corrected:**
+- Audit log is now wired/written (C1 closed) — docs previously said "not yet populated".
+- Compliance/entitlements pills removed (C2 + C4 closed) — bar now honest pilot disclosures only.
+- Path-traversal on `/api/workspace/{id}/list/` fixed with `relative_to()` (C3 closed).
+- Chart artifact pipeline shipped — live Plotly charts from `ArtifactCreateEvent` payloads.
+- LICENSE is MIT (was "[Your License Here]"); Acknowledgments no longer claim Streamlit frontend.
+- Setup docs (QUICKSTART/CLAUDE_CODE_SETUP/AUTHENTICATION_SETUP) migrated from `streamlit run` / :8501 to `npm run dev` / :3000.
+- Test count 66 → 87; `main.py` now ~1,186 lines (C5 router split still open).
+**Still stale (deliberately not edited mid-session, rule 6h):** project `CLAUDE.md` Known Issues lists C1–C4 as critical-open and `main.py` as 1,084 lines.
+**What changed in understanding:** Milestone 0 is fully closed; the docs now match the shipped code, and the only structural debt left is the `main.py` router split.
+
+---

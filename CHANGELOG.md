@@ -4,13 +4,24 @@ All notable changes to Quant Agent. Keep-a-Changelog format. Reverse chronologic
 
 ## [Unreleased]
 
-### Pending audit-fix waves (see `docs/audit/2026-05-20-deep-audit.md`)
+### Pending (see `docs/audit/2026-05-20-deep-audit.md` + `ROADMAP.md`)
 
-- Wire `AuditLogger` to the chat endpoint (currently audit_log table is never written in production)
-- Path-traversal fix on `/api/workspace/{id}/list/` (sibling-traversal still possible)
-- Split `main.py` (1,084 lines) into routers
-- Frontend `<ErrorBoundary>` + observability
-- Real ADRs for CLI-over-SDK, SSE, SQLite-vs-Postgres, no-auth-v1
+- Split `main.py` (~1,186 lines) into routers (audit C5)
+- Frontend `<ErrorBoundary>` + observability (no `/metrics`, no Sentry/OTel)
+- Internal-DAU dogfood week before any external demo (audit C6)
+
+## [0.4.0] — 2026-07-08
+
+### Added
+- **Chart artifact pipeline** — backend emits real series in `ArtifactCreateEvent`; frontend renders a live Plotly chart from the payload. First end-to-end slice of the dogfood loop (`e7d7a5b`, `fb675e7`).
+- `AuditLogger` instantiated at module scope and injected into the chat pipeline — every chat turn now writes an append-only audit row; `/api/audit/{id}` and PDF export read real data (audit **C1** closed, `751f4ec`).
+- Backend test suite grown to 87 functions across 15 files (audit, artifact store/scanner, chart payload, streaming integration).
+
+### Fixed
+- **Path-traversal** on `/api/workspace/{id}/list/` — replaced string `startswith()` with `relative_to()` (raises `ValueError` on escape), closing the sibling-traversal gap the `/files/` fix had left open (audit **C3** closed).
+
+### Removed
+- Cosmetic compliance theater: the "Entitlements: …" and "MNPI walls: ON" pills (nothing enforced them) plus the dead ⌘K `<span>` in StatusBar. `ComplianceBar` now shows only honest pilot disclosures (audit **C2 + C4** closed, `1c18bb9`).
 
 ## [0.3.0] — 2026-05-14
 

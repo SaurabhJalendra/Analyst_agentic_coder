@@ -6,9 +6,9 @@ An institutional-client research console — a Claude AI agent for quant analysi
 
 - **Agentic chat** with live streaming of plan, sub-agents, tool calls, and source access
 - **Per-session workspaces** — each chat clones into its own isolated git repo
-- **Branded artifacts** — charts (Plotly), tables (TanStack), code blocks, markdown + LaTeX
-- **Audit log + methodology trail** — every prompt and tool call traceable, exportable to PDF
-- **Compliance bar** — entitlements + MNPI walls indicator + disclosures footer
+- **Branded artifacts** — live Plotly charts rendered from agent-emitted payloads, tables (TanStack), code blocks, markdown + LaTeX
+- **Audit trail** — every prompt and tool call written to an append-only audit log, exportable to PDF
+- **Honest pilot disclosures** — single-user local-pilot banner + "not investment advice" footer (the earlier entitlements/MNPI-wall pills were removed as unenforced — see audit C2)
 
 ## Architecture
 
@@ -79,7 +79,7 @@ quant-agent/
 │   ├── migrations/
 │   │   ├── run.py                  # Lightweight migration runner
 │   │   └── 001_audit_artifacts.sql
-│   └── tests/                      # 66 tests incl. cli_translator Hypothesis fuzz
+│   └── tests/                      # 87 tests: cli_translator Hypothesis fuzz + audit, artifact & chart pipeline
 ├── frontend-react/
 │   └── src/
 │       ├── App.tsx
@@ -142,8 +142,9 @@ Optional:
 - **No authentication** in v1 — see `docs/adr/0004-no-auth-v1.md`. Do NOT expose to the internet.
 - CORS allowlist via `CORS_ORIGINS`; defaults to localhost.
 - slowapi rate limit (20/min/IP) on `/api/chat`.
-- Compliance bar UI is **cosmetic** until entitlements service ships (see `docs/audit/2026-05-20-deep-audit.md` C2).
-- Audit log table is **not yet populated** in production (see audit C1).
+- Compliance/entitlements pills were **removed** (nothing enforced them); the bar now shows only honest pilot disclosures until a real entitlements service ships (audit C2, closed).
+- Audit log is **wired and written** on every chat turn via an injected `AuditLogger` (audit C1, closed) — `/api/audit/{id}` and PDF export read real rows.
+- `main.py` is still a single ~1,186-line module; the router split (audit C5) is the main open structural item.
 
 ## Contributing
 
@@ -151,18 +152,17 @@ Solo project for now. If you'd like to engage, open an issue at https://github.c
 
 ## License
 
-[Your License Here]
+MIT — see [`LICENSE`](LICENSE). © 2026 Saurabh Jalendra.
 
 ## Support
 
-For issues and questions:
-- GitHub Issues: [Your Issues URL]
-- Documentation: This README
-- API Docs: http://localhost:8000/docs
+- GitHub Issues: https://github.com/SaurabhJalendra/quant-agent/issues
+- API docs (live): http://localhost:8000/docs
+- Architecture decisions: `docs/adr/`
 
 ## Acknowledgments
 
-- Built with [Claude AI](https://www.anthropic.com/claude) by Anthropic
-- [FastAPI](https://fastapi.tiangolo.com/) for backend
-- [Streamlit](https://streamlit.io/) for frontend
-- Inspired by [Claude Code CLI](https://github.com/anthropics/claude-code)
+- Agent runtime: [Claude Code CLI](https://github.com/anthropics/claude-code) by Anthropic
+- Backend: [FastAPI](https://fastapi.tiangolo.com/)
+- Frontend: [React](https://react.dev/) + [Vite](https://vite.dev/) + [Tailwind CSS](https://tailwindcss.com/)
+- Charts: [Plotly](https://plotly.com/javascript/)
